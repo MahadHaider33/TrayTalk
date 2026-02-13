@@ -1,6 +1,13 @@
-# Install
+# Install and setup
 
-Build in XCode
+- Build in XCode.
+- Copy Traytalk.app to ~/Applications
+
+# Permissions
+
+Requires OSX Accessibility permission.
+
+Note: You may have to restart it after giving it permission.
 
 # Google Cloud Service account (json)
 
