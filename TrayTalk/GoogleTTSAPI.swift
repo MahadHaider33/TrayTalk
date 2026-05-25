@@ -25,33 +25,6 @@ struct VoicesResponse: Codable {
 }
 
 
-enum AudioEffect: String, CaseIterable {
-    case none = ""
-    case wearable = "wearable-class-device"
-    case handset = "handset-class-device"
-    case headphone = "headphone-class-device"
-    case smallSpeaker = "small-bluetooth-speaker-class-device"
-    case mediumSpeaker = "medium-bluetooth-speaker-class-device"
-    case largeSpeaker = "large-home-entertainment-class-device"
-    case carSpeaker = "large-automotive-class-device"
-    case telephony = "telephony-class-application"
-    
-    var displayName: String {
-        switch self {
-        case .none: return "No Effect"
-        case .wearable: return "Wearable"
-        case .handset: return "Handset"
-        case .headphone: return "Headphone"
-        case .smallSpeaker: return "Small Speaker"
-        case .mediumSpeaker: return "Medium Speaker"
-        case .largeSpeaker: return "Large Speaker"
-        case .carSpeaker: return "Car Speaker"
-        case .telephony: return "Telephony"
-        }
-    }
-}
-
-
 enum GoogleTTSError: LocalizedError {
     case invalidURL
     case invalidCredentials
@@ -102,6 +75,7 @@ class GoogleTTSAPI {
     private var tokenExpirationDate: Date?
     private var isInitializing = false
     private var initializationCompletion: (() -> Void)?
+    private var currentDataTask: URLSessionDataTask?
     
     private var voices: [TTSVoice] = []
     
@@ -219,9 +193,9 @@ class GoogleTTSAPI {
         }
     }
     
-    func getAudio(text: String, language: String, voiceName: String, speed: Double, pitch: Double, effect: AudioEffect = .none, completion: @escaping (Result<Data, Error>) -> Void) {
+    func getAudio(text: String, language: String, voiceName: String, speed: Double, completion: @escaping (Result<Data, Error>) -> Void) {
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            print("Starting getAudio for text: \(text) with voice: \(voiceName) at speed: \(speed) and pitch: \(pitch)")
+            print("Starting getAudio for text: \(text) with voice: \(voiceName) at speed: \(speed)")
             self?.getAccessToken { result in
                 switch result {
                 case .success(let token):
@@ -231,8 +205,6 @@ class GoogleTTSAPI {
                                               language: language,
                                               voiceName: voiceName,
                                               speed: speed,
-                                              pitch: pitch,
-                                              effect: effect,
                                               completion: completion)
                 case .failure(let error):
                     print("Token acquisition failed: \(error)")
@@ -244,7 +216,7 @@ class GoogleTTSAPI {
         }
     }
     
-    private func performAudioRequest(with token: String, text: String, language: String, voiceName: String, speed: Double, pitch: Double, effect: AudioEffect = .none, completion: @escaping (Result<Data, Error>) -> Void) {
+    private func performAudioRequest(with token: String, text: String, language: String, voiceName: String, speed: Double, completion: @escaping (Result<Data, Error>) -> Void) {
         print("Starting audio request...")
         guard let url = URL(string: baseURL) else {
             print("Invalid URL: \(baseURL)")
@@ -260,13 +232,8 @@ class GoogleTTSAPI {
         var audioConfig: [String: Any] = [
             "audioEncoding": "MP3",
             // "speakingRate": speed, // we are speeding it up afterwards for better quality
-            "speakingRate": 1.0,
-            "pitch": pitch
+            "speakingRate": 1.0
         ]
-        
-        if effect != .none {
-            audioConfig["effectsProfileId"] = [effect.rawValue]
-        }
         
         let requestBody: [String: Any] = [
             "input": [
@@ -290,6 +257,7 @@ class GoogleTTSAPI {
         }
 
         print("Creating URLSession task...")
+        currentDataTask?.cancel()
         let task = URLSession.shared.dataTask(with: request) { (data, response, error) in
             DispatchQueue.main.async {
                 print("Received response from server")
@@ -341,6 +309,7 @@ class GoogleTTSAPI {
         }
         
         print("Resuming task...")
+        currentDataTask = task
         task.resume()
         print("Task resumed")
     }

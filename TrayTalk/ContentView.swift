@@ -16,13 +16,11 @@ struct ContentView: View {
     @State private var isInitializing = false
     @State private var selectedVoice: TTSVoice?
     @AppStorage("speakingSpeed") private var speakingSpeed = 1.0
-    @AppStorage("speakingPitch") private var speakingPitch = 0.0
     @State private var api: GoogleTTSAPI?
     @State private var availableVoices: [TTSVoice] = []
     @State private var selectedLanguage: String = "en-US"
     @State private var availableLanguages: [String] = []
     @EnvironmentObject private var hotkeyManager: HotkeyManager
-    @AppStorage("selectedEffect") private var selectedEffect = AudioEffect.none
     @AppStorage("hotkey") private var hotkey = "option + `"
     @State private var editingHotkey = false
     @State private var currentRequest: Task<Void, Never>?
@@ -100,24 +98,12 @@ struct ContentView: View {
                         .pickerStyle(MenuPickerStyle())
                     }
                     
-                    Text("Audio Effect:")
-                        .bold()
-                    Picker("Audio Effect", selection: $selectedEffect) {
-                        ForEach(AudioEffect.allCases, id: \.self) { effect in
-                            Text(effect.displayName).tag(effect)
-                        }
-                    }
-                    .pickerStyle(MenuPickerStyle())
                 }
                 
                 Group {
                     Text("Speaking Speed: \(speakingSpeed, specifier: "%.2f")x")
                         .bold()
                     Slider(value: $speakingSpeed, in: 0.25...4.0)
-                    
-                    Text("Pitch: \(speakingPitch, specifier: "%.1f")")
-                        .bold()
-                    Slider(value: $speakingPitch, in: -20.0...20.0, step: 0.5)
                 }
                 
                 Group {
