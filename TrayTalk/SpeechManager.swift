@@ -30,6 +30,7 @@ class SpeechManager {
         }
         
         audioPlayer.stop()
+        GoogleTTSAPI.cancelAudioRequests(except: speechID)
         
         if Preferences.shared.voiceName.isEmpty {
             DispatchQueue.main.async { self.appDelegate?.setTrayLoading(false) }
@@ -38,11 +39,19 @@ class SpeechManager {
         
         GoogleTTSAPI.getInstance(credentialsJson: Preferences.shared.credentials) { api in
             guard self.activeSpeechID == speechID else { return }
+            api.cancelAudioRequests(excluding: speechID)
             
+            var pendingRemainderAudio: Data?
+            var didStartPlayback = false
+            var firstChunkFailed = false
+            
+            TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=first requested chars=\(chunks.first.count)")
             api.getAudio(text: chunks.first,
                          language: Preferences.shared.language,
                          voiceName: Preferences.shared.voiceName,
-                         speed: Preferences.shared.speakingSpeed
+                         speed: Preferences.shared.speakingSpeed,
+                         speechID: speechID,
+                         chunkLabel: "first"
             ) { result in
                 guard self.activeSpeechID == speechID else { return }
                 
@@ -50,34 +59,67 @@ class SpeechManager {
                 case .success(let data):
                     self.audioData = data
                     self.audioPlayer.play(data: data)
+                    didStartPlayback = true
+                    
+                    if let pendingRemainderAudio = pendingRemainderAudio {
+                        self.audioPlayer.enqueue(data: pendingRemainderAudio)
+                    }
+                    
                     DispatchQueue.main.async {
                         self.appDelegate?.setTrayLoading(false)
                     }
-                    
-                    guard let remainder = chunks.remainder else { return }
-                    
-                    api.getAudio(text: remainder,
-                                 language: Preferences.shared.language,
-                                 voiceName: Preferences.shared.voiceName,
-                                 speed: Preferences.shared.speakingSpeed
-                    ) { result in
-                        guard self.activeSpeechID == speechID else { return }
-                        
-                        switch result {
-                        case .success(let data):
-                            self.audioPlayer.enqueue(data: data)
-                        case .failure(let error):
-                            print("\(error.localizedDescription)")
-                        }
-                    }
                 case .failure(let error):
+                    firstChunkFailed = true
+                    pendingRemainderAudio = nil
                     print("\(error.localizedDescription)")
                     DispatchQueue.main.async {
                         self.appDelegate?.setTrayLoading(false)
                     }
                 }
             }
+            
+            if let remainder = chunks.remainder {
+                TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=remainder requested chars=\(remainder.count)")
+                api.getAudio(text: remainder,
+                             language: Preferences.shared.language,
+                             voiceName: Preferences.shared.voiceName,
+                             speed: Preferences.shared.speakingSpeed,
+                             speechID: speechID,
+                             chunkLabel: "remainder"
+                ) { result in
+                    guard self.activeSpeechID == speechID else { return }
+                    
+                    switch result {
+                    case .success(let data):
+                        guard !firstChunkFailed else { return }
+                        
+                        if didStartPlayback {
+                            self.audioPlayer.enqueue(data: data)
+                        } else {
+                            pendingRemainderAudio = data
+                        }
+                    case .failure(let error):
+                        print("\(error.localizedDescription)")
+                    }
+                }
+            }
         }
+    }
+}
+
+enum TTSLogger {
+    private static func timestamp(for date: Date) -> String {
+        let formatter = DateFormatter()
+        formatter.dateFormat = "HH:mm:ss.SSS"
+        return formatter.string(from: date)
+    }
+    
+    static func log(_ message: String, date: Date = Date()) {
+        print("[TTS] \(timestamp(for: date)) \(message)")
+    }
+    
+    static func shortID(_ id: UUID) -> String {
+        String(id.uuidString.prefix(4))
     }
 }
 

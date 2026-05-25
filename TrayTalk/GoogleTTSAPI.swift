@@ -75,7 +75,9 @@ class GoogleTTSAPI {
     private var tokenExpirationDate: Date?
     private var isInitializing = false
     private var initializationCompletion: (() -> Void)?
-    private var currentDataTask: URLSessionDataTask?
+    private let audioTasksQueue = DispatchQueue(label: "com.traytalk.google-tts.audio-tasks")
+    private var audioTasksBySession: [UUID: [UUID: URLSessionDataTask]] = [:]
+    private var cancelledAudioSessions: Set<UUID> = []
     
     private var voices: [TTSVoice] = []
     
@@ -104,6 +106,10 @@ class GoogleTTSAPI {
                 }
             }
         }
+    }
+    
+    static func cancelAudioRequests(except activeSpeechID: UUID) {
+        shared?.cancelAudioRequests(excluding: activeSpeechID)
     }
     
     private init(credentialsJson: String) {
@@ -193,18 +199,44 @@ class GoogleTTSAPI {
         }
     }
     
-    func getAudio(text: String, language: String, voiceName: String, speed: Double, completion: @escaping (Result<Data, Error>) -> Void) {
+    func cancelAudioRequests(excluding activeSpeechID: UUID) {
+        audioTasksQueue.sync {
+            let inactiveSessionIDs = audioTasksBySession.keys.filter { $0 != activeSpeechID }
+            
+            for sessionID in inactiveSessionIDs {
+                let cancelledCount = audioTasksBySession[sessionID]?.count ?? 0
+                TTSLogger.log("session=\(TTSLogger.shortID(sessionID)) cancelled inactive-session pendingRequests=\(cancelledCount)")
+                audioTasksBySession[sessionID]?.values.forEach { $0.cancel() }
+                audioTasksBySession.removeValue(forKey: sessionID)
+                cancelledAudioSessions.insert(sessionID)
+            }
+        }
+    }
+    
+    func getAudio(text: String, language: String, voiceName: String, speed: Double, speechID: UUID, chunkLabel: String, completion: @escaping (Result<Data, Error>) -> Void) {
+        let requestedAt = Date()
+        TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=\(chunkLabel) getAudio-requested chars=\(text.count)", date: requestedAt)
+        registerAudioSession(speechID)
+        
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            print("Starting getAudio for text: \(text) with voice: \(voiceName) at speed: \(speed)")
+            TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=\(chunkLabel) token-requested voice=\(voiceName) speed=\(speed)")
             self?.getAccessToken { result in
                 switch result {
                 case .success(let token):
-                    print("Proceeding with audio request using token")
+                    guard self?.isAudioSessionCancelled(speechID) == false else {
+                        TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=\(chunkLabel) cancelled before-task")
+                        return
+                    }
+                    
+                    TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=\(chunkLabel) token-ready elapsed=\(Self.elapsedString(since: requestedAt))")
                     self?.performAudioRequest(with: token,
                                               text: text,
                                               language: language,
                                               voiceName: voiceName,
                                               speed: speed,
+                                              speechID: speechID,
+                                              chunkLabel: chunkLabel,
+                                              requestedAt: requestedAt,
                                               completion: completion)
                 case .failure(let error):
                     print("Token acquisition failed: \(error)")
@@ -216,8 +248,8 @@ class GoogleTTSAPI {
         }
     }
     
-    private func performAudioRequest(with token: String, text: String, language: String, voiceName: String, speed: Double, completion: @escaping (Result<Data, Error>) -> Void) {
-        print("Starting audio request...")
+    private func performAudioRequest(with token: String, text: String, language: String, voiceName: String, speed: Double, speechID: UUID, chunkLabel: String, requestedAt: Date, completion: @escaping (Result<Data, Error>) -> Void) {
+        TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=\(chunkLabel) audio-request-preparing")
         guard let url = URL(string: baseURL) else {
             print("Invalid URL: \(baseURL)")
             completion(.failure(GoogleTTSError.invalidURL))
@@ -229,7 +261,7 @@ class GoogleTTSAPI {
         request.setValue("application/json", forHTTPHeaderField: "Content-Type")
         request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
         
-        var audioConfig: [String: Any] = [
+        let audioConfig: [String: Any] = [
             "audioEncoding": "MP3",
             // "speakingRate": speed, // we are speeding it up afterwards for better quality
             "speakingRate": 1.0
@@ -249,7 +281,7 @@ class GoogleTTSAPI {
         do {
             let jsonData = try JSONSerialization.data(withJSONObject: requestBody)
             request.httpBody = jsonData
-            print("Request body prepared: \(String(data: jsonData, encoding: .utf8) ?? "")")
+            TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=\(chunkLabel) request-body-prepared chars=\(text.count)")
         } catch {
             print("JSON encoding error: \(error)")
             completion(.failure(GoogleTTSError.jsonEncodingError))
@@ -257,11 +289,13 @@ class GoogleTTSAPI {
         }
 
         print("Creating URLSession task...")
-        currentDataTask?.cancel()
+        let requestID = UUID()
         let task = URLSession.shared.dataTask(with: request) { (data, response, error) in
+            self.removeAudioTask(requestID, from: speechID)
+            
             DispatchQueue.main.async {
-                print("Received response from server")
                 if let error = error {
+                    TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=\(chunkLabel) response error=\(error.localizedDescription) elapsed=\(Self.elapsedString(since: requestedAt))")
                     print("Network error: \(error)")
                     completion(.failure(error))
                     return
@@ -273,6 +307,7 @@ class GoogleTTSAPI {
                     return
                 }
                 
+                TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=\(chunkLabel) response status=\(httpResponse.statusCode) elapsed=\(Self.elapsedString(since: requestedAt))")
                 print("Got response with status code: \(httpResponse.statusCode)")
                 print("Response headers: \(httpResponse.allHeaderFields)")
                 
@@ -309,9 +344,55 @@ class GoogleTTSAPI {
         }
         
         print("Resuming task...")
-        currentDataTask = task
+        guard registerAudioTask(task, requestID: requestID, for: speechID, chunkLabel: chunkLabel) else { return }
         task.resume()
-        print("Task resumed")
+        TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=\(chunkLabel) task-resumed requestID=\(TTSLogger.shortID(requestID)) elapsed=\(Self.elapsedString(since: requestedAt))")
+    }
+    
+    private func registerAudioSession(_ speechID: UUID) {
+        audioTasksQueue.sync {
+            if audioTasksBySession[speechID] == nil {
+                audioTasksBySession[speechID] = [:]
+            }
+            cancelledAudioSessions.remove(speechID)
+        }
+    }
+    
+    private func registerAudioTask(_ task: URLSessionDataTask, requestID: UUID, for speechID: UUID, chunkLabel: String) -> Bool {
+        audioTasksQueue.sync {
+            guard !cancelledAudioSessions.contains(speechID) else {
+                task.cancel()
+                TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=\(chunkLabel) cancelled before-task-resume")
+                return false
+            }
+            
+            audioTasksBySession[speechID, default: [:]][requestID] = task
+            return true
+        }
+    }
+    
+    private func removeAudioTask(_ requestID: UUID, from speechID: UUID) {
+        audioTasksQueue.sync {
+            guard var tasks = audioTasksBySession[speechID] else { return }
+            
+            tasks.removeValue(forKey: requestID)
+            
+            if tasks.isEmpty {
+                audioTasksBySession.removeValue(forKey: speechID)
+            } else {
+                audioTasksBySession[speechID] = tasks
+            }
+        }
+    }
+    
+    private func isAudioSessionCancelled(_ speechID: UUID) -> Bool {
+        audioTasksQueue.sync {
+            cancelledAudioSessions.contains(speechID)
+        }
+    }
+    
+    private static func elapsedString(since startDate: Date) -> String {
+        String(format: "%.3fs", Date().timeIntervalSince(startDate))
     }
     
     func fetchVoices(languageCode: String? = nil, completion: @escaping ([TTSVoice]) -> Void) {
