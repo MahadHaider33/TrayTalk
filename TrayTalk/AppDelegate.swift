@@ -36,6 +36,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         let quitMenuItem = NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "")
         
         menu.addItem(settingsMenuItem)
+        menu.addItem(NSMenuItem.separator())
         menu.addItem(createSpeedMenuItem())
         menu.addItem(NSMenuItem.separator())
         menu.addItem(quitMenuItem)
@@ -103,7 +104,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     }
 
     private func createSpeedMenuItem() -> NSMenuItem {
-        let container = NSView(frame: NSRect(x: 0, y: 0, width: 260, height: 34))
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 40))
 
         let titleLabel = NSTextField(labelWithString: "Speed")
         titleLabel.font = .systemFont(ofSize: NSFont.systemFontSize)
@@ -127,8 +128,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         container.addSubview(stackView)
 
         NSLayoutConstraint.activate([
-            stackView.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 12),
-            stackView.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -12),
+            stackView.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
+            stackView.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -24),
             stackView.centerYAnchor.constraint(equalTo: container.centerYAnchor),
             titleLabel.widthAnchor.constraint(equalToConstant: 42),
             slider.widthAnchor.constraint(equalToConstant: 130)

@@ -23,7 +23,7 @@ class SpeechManager {
     func speak(_ text: String) {
         let speechID = UUID()
         activeSpeechID = speechID
-        let chunks = TextChunker.firstThenRest(text)
+        let chunks = TextChunker.chunks(text)
         
         DispatchQueue.main.async {
             self.appDelegate?.setTrayLoading(true)
@@ -37,69 +37,94 @@ class SpeechManager {
             return
         }
         
+        if chunks.isEmpty {
+            DispatchQueue.main.async { self.appDelegate?.setTrayLoading(false) }
+            return
+        }
+        
         GoogleTTSAPI.getInstance(credentialsJson: Preferences.shared.credentials) { api in
             guard self.activeSpeechID == speechID else { return }
             api.cancelAudioRequests(excluding: speechID)
             
-            var pendingRemainderAudio: Data?
+            var audioByChunkIndex: [Int: Data] = [:]
+            var nextChunkToPlay = 0
+            var failedChunkIndex: Int?
             var didStartPlayback = false
-            var firstChunkFailed = false
             
-            TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=first requested chars=\(chunks.first.count)")
-            api.getAudio(text: chunks.first,
-                         language: Preferences.shared.language,
-                         voiceName: Preferences.shared.voiceName,
-                         speed: Preferences.shared.speakingSpeed,
-                         speechID: speechID,
-                         chunkLabel: "first"
-            ) { result in
-                guard self.activeSpeechID == speechID else { return }
-                
-                switch result {
-                case .success(let data):
-                    self.audioData = data
-                    self.audioPlayer.play(data: data)
-                    didStartPlayback = true
-                    
-                    if let pendingRemainderAudio = pendingRemainderAudio {
-                        self.audioPlayer.enqueue(data: pendingRemainderAudio)
+            func drainReadyChunks() {
+                while let audio = audioByChunkIndex[nextChunkToPlay] {
+                    if let failedChunkIndex = failedChunkIndex,
+                       nextChunkToPlay >= failedChunkIndex {
+                        audioByChunkIndex[nextChunkToPlay] = nil
+                        return
                     }
                     
-                    DispatchQueue.main.async {
-                        self.appDelegate?.setTrayLoading(false)
+                    audioByChunkIndex[nextChunkToPlay] = nil
+                    
+                    if didStartPlayback {
+                        self.audioPlayer.enqueue(data: audio)
+                    } else {
+                        self.audioData = audio
+                        self.audioPlayer.play(data: audio)
+                        didStartPlayback = true
+                        
+                        DispatchQueue.main.async {
+                            self.appDelegate?.setTrayLoading(false)
+                        }
                     }
-                case .failure(let error):
-                    firstChunkFailed = true
-                    pendingRemainderAudio = nil
-                    print("\(error.localizedDescription)")
-                    DispatchQueue.main.async {
-                        self.appDelegate?.setTrayLoading(false)
-                    }
+                    
+                    TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=chunk-\(nextChunkToPlay + 1) queued")
+                    nextChunkToPlay += 1
                 }
             }
             
-            if let remainder = chunks.remainder {
-                TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=remainder requested chars=\(remainder.count)")
-                api.getAudio(text: remainder,
+            func markChunkFailed(_ index: Int, error: Error) {
+                if let existingFailedChunkIndex = failedChunkIndex {
+                    failedChunkIndex = min(existingFailedChunkIndex, index)
+                } else {
+                    failedChunkIndex = index
+                }
+                
+                let firstFailedChunkIndex = failedChunkIndex ?? index
+                audioByChunkIndex = audioByChunkIndex.filter { $0.key < firstFailedChunkIndex }
+                
+                TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=chunk-\(index + 1) failed cutoff=chunk-\(firstFailedChunkIndex + 1) error=\(error.localizedDescription)")
+                print("\(error.localizedDescription)")
+                
+                if index == 0 && !didStartPlayback {
+                    DispatchQueue.main.async {
+                        self.appDelegate?.setTrayLoading(false)
+                    }
+                } else {
+                    drainReadyChunks()
+                }
+            }
+            
+            for (index, chunk) in chunks.enumerated() {
+                let chunkLabel = "chunk-\(index + 1)"
+                TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=\(chunkLabel) requested chars=\(chunk.count)")
+                
+                api.getAudio(text: chunk,
                              language: Preferences.shared.language,
                              voiceName: Preferences.shared.voiceName,
                              speed: Preferences.shared.speakingSpeed,
                              speechID: speechID,
-                             chunkLabel: "remainder"
+                             chunkLabel: chunkLabel
                 ) { result in
                     guard self.activeSpeechID == speechID else { return }
                     
                     switch result {
                     case .success(let data):
-                        guard !firstChunkFailed else { return }
-                        
-                        if didStartPlayback {
-                            self.audioPlayer.enqueue(data: data)
-                        } else {
-                            pendingRemainderAudio = data
+                        if let failedChunkIndex = failedChunkIndex,
+                           index >= failedChunkIndex {
+                            TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=\(chunkLabel) ignored after-failure")
+                            return
                         }
+                        
+                        audioByChunkIndex[index] = data
+                        drainReadyChunks()
                     case .failure(let error):
-                        print("\(error.localizedDescription)")
+                        markChunkFailed(index, error: error)
                     }
                 }
             }
@@ -125,30 +150,45 @@ enum TTSLogger {
 
 
 private struct TextChunker {
-    private static let searchStart = 125
-    private static let searchEnd = 300
+    private static let chunkTargets = [125, 500, 800]
+    private static let defaultChunkTarget = 1000
     
-    static func firstThenRest(_ text: String) -> (first: String, remainder: String?) {
-        guard text.count > searchEnd,
-              let breakIndex = firstBreakIndex(in: text) else {
-            return (text, nil)
+    static func chunks(_ text: String) -> [String] {
+        var chunks: [String] = []
+        var remaining = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        
+        while !remaining.isEmpty {
+            let target = targetLength(forChunkAt: chunks.count)
+            
+            guard remaining.count > target,
+                  let breakIndex = firstBreakIndex(in: remaining, after: target) else {
+                chunks.append(remaining)
+                break
+            }
+            
+            let chunk = String(remaining[..<breakIndex]).trimmingCharacters(in: .whitespacesAndNewlines)
+            if !chunk.isEmpty {
+                chunks.append(chunk)
+            }
+            
+            remaining = String(remaining[breakIndex...]).trimmingCharacters(in: .whitespacesAndNewlines)
         }
         
-        let first = String(text[..<breakIndex])
-        let remainder = String(text[breakIndex...]).trimmingCharacters(in: .whitespacesAndNewlines)
-        
-        guard !remainder.isEmpty else {
-            return (text, nil)
-        }
-        
-        return (first, remainder)
+        return chunks
     }
     
-    private static func firstBreakIndex(in text: String) -> String.Index? {
-        var index = text.index(text.startIndex, offsetBy: searchStart)
-        let endIndex = text.index(text.startIndex, offsetBy: min(searchEnd, text.count))
+    private static func targetLength(forChunkAt index: Int) -> Int {
+        guard index < chunkTargets.count else {
+            return defaultChunkTarget
+        }
         
-        while index < endIndex {
+        return chunkTargets[index]
+    }
+    
+    private static func firstBreakIndex(in text: String, after target: Int) -> String.Index? {
+        var index = text.index(text.startIndex, offsetBy: target)
+        
+        while index < text.endIndex {
             let character = text[index]
             let nextIndex = text.index(after: index)
             
