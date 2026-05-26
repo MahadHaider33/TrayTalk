@@ -64,6 +64,7 @@ enum GoogleTTSError: LocalizedError {
 class GoogleTTSAPI {
     // Singleton instance
     private static var shared: GoogleTTSAPI?
+    private static let defaultGeminiModelName = "gemini-2.5-flash-tts"
     
     private let credentials: String
     private let baseURL = "https://texttospeech.googleapis.com/v1/text:synthesize"
@@ -267,21 +268,28 @@ class GoogleTTSAPI {
             "speakingRate": 1.0
         ]
         
+        var voiceConfig: [String: Any] = [
+            "languageCode": language,
+            "name": voiceName
+        ]
+        let modelName = modelName(for: voiceName)
+        if let modelName = modelName {
+            voiceConfig["model_name"] = modelName
+        }
+        
         let requestBody: [String: Any] = [
             "input": [
                 "text": text
             ],
-            "voice": [
-                "languageCode": language,
-                "name": voiceName
-            ],
+            "voice": voiceConfig,
             "audioConfig": audioConfig
         ]
 
         do {
             let jsonData = try JSONSerialization.data(withJSONObject: requestBody)
             request.httpBody = jsonData
-            TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=\(chunkLabel) request-body-prepared chars=\(text.count)")
+            let modelLogValue = modelName ?? "none"
+            TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=\(chunkLabel) request-body-prepared chars=\(text.count) model=\(modelLogValue)")
         } catch {
             print("JSON encoding error: \(error)")
             completion(.failure(GoogleTTSError.jsonEncodingError))
@@ -347,6 +355,15 @@ class GoogleTTSAPI {
         guard registerAudioTask(task, requestID: requestID, for: speechID, chunkLabel: chunkLabel) else { return }
         task.resume()
         TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=\(chunkLabel) task-resumed requestID=\(TTSLogger.shortID(requestID)) elapsed=\(Self.elapsedString(since: requestedAt))")
+    }
+    
+    private func modelName(for voiceName: String) -> String? {
+        let localePrefixedVoicePattern = #"^[a-z]{2,3}-[A-Z]{2}-"#
+        let range = NSRange(voiceName.startIndex..<voiceName.endIndex, in: voiceName)
+        let regex = try? NSRegularExpression(pattern: localePrefixedVoicePattern)
+        let isLocalePrefixedVoice = regex?.firstMatch(in: voiceName, range: range) != nil
+        
+        return isLocalePrefixedVoice ? nil : Self.defaultGeminiModelName
     }
     
     private func registerAudioSession(_ speechID: UUID) {
