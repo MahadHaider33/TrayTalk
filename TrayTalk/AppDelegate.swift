@@ -68,8 +68,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func createSettingsWindow() {
         let contentView = ContentView()
         
-        let windowWidth: CGFloat = 900
-        let windowHeight: CGFloat = 630
+        let windowWidth: CGFloat = 880
+        let windowHeight: CGFloat = 700
         
         let settingsWindow = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: windowWidth, height: windowHeight),
@@ -79,6 +79,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         )
         
         settingsWindow.title = "Smooth Talker"
+        settingsWindow.minSize = NSSize(width: 720, height: 590)
         settingsWindow.contentView = NSHostingView(rootView: contentView)
         
         settingsWindow.center()

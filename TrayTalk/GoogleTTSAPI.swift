@@ -24,6 +24,15 @@ struct VoicesResponse: Codable {
     let voices: [TTSVoice]
 }
 
+private struct GoogleErrorResponse: Codable {
+    let error: GoogleErrorDetail?
+}
+
+private struct GoogleErrorDetail: Codable {
+    let code: Int?
+    let message: String?
+    let status: String?
+}
 
 enum GoogleTTSError: LocalizedError {
     case invalidURL
@@ -56,6 +65,88 @@ enum GoogleTTSError: LocalizedError {
             return "No data received"
         case .jsonEncodingError:
             return "Failed to encode request body"
+        }
+    }
+
+    var userMessage: String {
+        switch self {
+        case .invalidURL:
+            return "Smooth Talker could not reach Google Cloud because the service URL is invalid."
+        case .invalidCredentials:
+            return "The Google Cloud credentials could not be read. Import the downloaded service account JSON again."
+        case .authenticationFailed(let message):
+            return "Google rejected the credentials. Download a new service account JSON key and try again. \(message)"
+        case .noToken:
+            return "Google did not return an access token. Download a new service account JSON key and try again."
+        case .invalidResponse:
+            return "Google Cloud returned a response Smooth Talker could not understand. Try again in a moment."
+        case .httpError(let code, let body):
+            return Self.userMessage(forHTTPStatus: code, body: body)
+        case .noData:
+            return "Google Cloud did not return any data. Check your network connection and try again."
+        case .jsonEncodingError:
+            return "Smooth Talker could not prepare the text-to-speech request."
+        }
+    }
+
+    static func userMessage(for error: Error) -> String {
+        if let googleError = error as? GoogleTTSError {
+            return googleError.userMessage
+        }
+
+        if let urlError = error as? URLError {
+            switch urlError.code {
+            case .notConnectedToInternet:
+                return "You appear to be offline. Connect to the internet and try again."
+            case .timedOut:
+                return "The request to Google Cloud timed out. Try again in a moment."
+            default:
+                return "Network error: \(urlError.localizedDescription)"
+            }
+        }
+
+        return error.localizedDescription
+    }
+
+    private static func userMessage(forHTTPStatus code: Int, body: String?) -> String {
+        let googleMessage = body.flatMap { body -> String? in
+            guard let data = body.data(using: .utf8),
+                  let response = try? JSONDecoder().decode(GoogleErrorResponse.self, from: data) else {
+                return nil
+            }
+            return response.error?.message
+        }
+
+        let searchableMessage = (googleMessage ?? body ?? "").lowercased()
+
+        if searchableMessage.contains("billing") {
+            return "Billing is not enabled for this Google Cloud project. Open Google Cloud Billing, attach a billing account, then try again."
+        }
+
+        if searchableMessage.contains("disabled") ||
+            searchableMessage.contains("not been used") ||
+            searchableMessage.contains("serviceusage") {
+            return "The Cloud Text-to-Speech API is not enabled for this project. Enable it in Google Cloud, then try again."
+        }
+
+        switch code {
+        case 400:
+            return googleMessage ?? "Google Cloud could not accept this request. Check the selected voice and credentials."
+        case 401:
+            return "The service account key could not be authenticated. Download a new JSON key from Google Cloud and import it."
+        case 403:
+            return googleMessage ?? "The service account does not have access to Cloud Text-to-Speech, or the project needs billing/API setup."
+        case 404:
+            return "Google Cloud could not find the requested Text-to-Speech resource. Confirm the API is enabled for this project."
+        case 429:
+            return "This Google Cloud project has hit a Text-to-Speech quota limit. Wait a bit or check quotas in Google Cloud."
+        case 500...599:
+            return "Google Cloud is having trouble right now. Try again in a moment."
+        default:
+            if let googleMessage {
+                return "Google Cloud error \(code): \(googleMessage)"
+            }
+            return "Google Cloud returned HTTP \(code)."
         }
     }
 }
@@ -112,6 +203,10 @@ class GoogleTTSAPI {
         shared?.cancelAudioRequests(excluding: activeSpeechID)
     }
     
+    static func resetSharedInstance() {
+        shared = nil
+    }
+    
     private init(credentialsJson: String) {
         self.credentials = credentialsJson
     }
@@ -162,8 +257,6 @@ class GoogleTTSAPI {
             return
         }
         
-        print(credentialsData)
-        
         guard let authentication = ServiceAccountTokenProvider(
             credentialsData: credentialsData,
             scopes: [scope]
@@ -174,28 +267,33 @@ class GoogleTTSAPI {
         }
         
         print("Requesting new token...")
-        try! authentication.withToken { [weak self] token, error in
-            if let error = error {
-                print("Token error: \(error.localizedDescription)")
-                completion(.failure(GoogleTTSError.authenticationFailed(error.localizedDescription)))
-                return
+        do {
+            try authentication.withToken { [weak self] token, error in
+                if let error = error {
+                    print("Token error: \(error.localizedDescription)")
+                    completion(.failure(GoogleTTSError.authenticationFailed(error.localizedDescription)))
+                    return
+                }
+                
+                guard let token = token,
+                      let accessToken = token.AccessToken else {
+                    print("No token received")
+                    completion(.failure(GoogleTTSError.noToken))
+                    return
+                }
+                
+                // Cache the new token and its expiration date
+                self?._cachedToken = accessToken
+                if let expiresIn = token.ExpiresIn {
+                    self?.tokenExpirationDate = Date().addingTimeInterval(TimeInterval(expiresIn))
+                }
+                
+                print("Got new access token")
+                completion(.success(accessToken))
             }
-            
-            guard let token = token,
-                  let accessToken = token.AccessToken else {
-                print("No token received")
-                completion(.failure(GoogleTTSError.noToken))
-                return
-            }
-            
-            // Cache the new token and its expiration date
-            self?._cachedToken = accessToken
-            if let expiresIn = token.ExpiresIn {
-                self?.tokenExpirationDate = Date().addingTimeInterval(TimeInterval(expiresIn))
-            }
-            
-            print("Got new access token: \(accessToken.prefix(10))...")
-            completion(.success(accessToken))
+        } catch {
+            print("Token request failed: \(error.localizedDescription)")
+            completion(.failure(GoogleTTSError.authenticationFailed(error.localizedDescription)))
         }
     }
     
@@ -395,7 +493,7 @@ class GoogleTTSAPI {
         String(format: "%.3fs", Date().timeIntervalSince(startDate))
     }
     
-    func fetchVoices(languageCode: String? = nil, completion: @escaping ([TTSVoice]) -> Void) {
+    func fetchVoices(languageCode: String? = nil, completion: @escaping (Result<[TTSVoice], Error>) -> Void) {
         getAccessToken { [weak self] result in
             switch result {
             case .success(let token):
@@ -408,7 +506,7 @@ class GoogleTTSAPI {
                 
                 guard let url = urlComponents?.url else {
                     print("Invalid URL")
-                    completion([])
+                    completion(.failure(GoogleTTSError.invalidURL))
                     return
                 }
                 
@@ -416,9 +514,35 @@ class GoogleTTSAPI {
                 request.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
                 
                 URLSession.shared.dataTask(with: request) { data, response, error in
+                    if let error = error {
+                        print("Voice fetch network error: \(error.localizedDescription)")
+                        DispatchQueue.main.async {
+                            completion(.failure(error))
+                        }
+                        return
+                    }
+                    
+                    guard let httpResponse = response as? HTTPURLResponse else {
+                        DispatchQueue.main.async {
+                            completion(.failure(GoogleTTSError.invalidResponse))
+                        }
+                        return
+                    }
+                    
+                    guard (200...299).contains(httpResponse.statusCode) else {
+                        let errorBody = data.flatMap { String(data: $0, encoding: .utf8) }
+                        print("Voice fetch HTTP error \(httpResponse.statusCode): \(errorBody ?? "no error body")")
+                        DispatchQueue.main.async {
+                            completion(.failure(GoogleTTSError.httpError(httpResponse.statusCode, errorBody)))
+                        }
+                        return
+                    }
+                    
                     guard let data = data else {
-                        print("No data received: \(error?.localizedDescription ?? "Unknown error")")
-                        completion([])
+                        print("No voice data received")
+                        DispatchQueue.main.async {
+                            completion(.failure(GoogleTTSError.noData))
+                        }
                         return
                     }
                     
@@ -427,17 +551,19 @@ class GoogleTTSAPI {
                         let response = try decoder.decode(VoicesResponse.self, from: data)
                         DispatchQueue.main.async {
                             self?.voices = response.voices
-                            completion(response.voices)
+                            completion(.success(response.voices))
                         }
                     } catch {
                         print("Decoding error: \(error)")
-                        completion([])
+                        DispatchQueue.main.async {
+                            completion(.failure(error))
+                        }
                     }
                 }.resume()
                 
             case .failure(let error):
                 print("Failed to get token for voices: \(error)")
-                completion([])
+                completion(.failure(error))
             }
         }
     }
