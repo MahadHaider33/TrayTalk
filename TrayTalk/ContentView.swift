@@ -7,6 +7,7 @@
 
 import AppKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 struct ContentView: View {
     @AppStorage("credentials") private var credentials = ""
@@ -120,22 +121,22 @@ struct ContentView: View {
     
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 16) {
                 header
                 inputArea
                 settingsCard
                 cloudCard
                 StatusCard(status: readyStatus)
             }
-            .padding(.horizontal, 34)
-            .padding(.top, 32)
-            .padding(.bottom, 28)
+            .padding(.horizontal, 28)
+            .padding(.top, 24)
+            .padding(.bottom, 22)
         }
         .background(Color(nsColor: .windowBackgroundColor))
-        .frame(minWidth: 760, minHeight: 650)
+        .frame(minWidth: 720, minHeight: 590)
         .sheet(isPresented: $isCredentialsSheetPresented) {
-            CredentialsSheet(credentials: credentials) { newCredentials in
-                saveCredentials(newCredentials)
+            CredentialsSetupSheet(credentials: credentials) { newCredentials, voices in
+                saveValidatedCredentials(newCredentials, voices: voices)
             }
         }
         .onAppear {
@@ -179,20 +180,20 @@ struct ContentView: View {
     }
     
     private var header: some View {
-        HStack(spacing: 22) {
+        HStack(spacing: 16) {
             Image(nsImage: NSApp.applicationIconImage)
                 .resizable()
                 .aspectRatio(contentMode: .fit)
-                .frame(width: 76, height: 76)
-                .clipShape(RoundedRectangle(cornerRadius: 18, style: .continuous))
+                .frame(width: 64, height: 64)
+                .clipShape(RoundedRectangle(cornerRadius: 14, style: .continuous))
             
-            VStack(alignment: .leading, spacing: 6) {
+            VStack(alignment: .leading, spacing: 4) {
                 Text("Smooth Talker")
-                    .font(.system(size: 34, weight: .bold, design: .rounded))
+                    .font(.system(size: 30, weight: .bold, design: .rounded))
                     .foregroundStyle(.primary)
                 
                 Text("Natural sounding text-to-speech")
-                    .font(.system(size: 17, weight: .medium))
+                    .font(.system(size: 15, weight: .medium))
                     .foregroundStyle(.secondary)
             }
             
@@ -201,36 +202,36 @@ struct ContentView: View {
     }
     
     private var inputArea: some View {
-        VStack(alignment: .trailing, spacing: 14) {
+        VStack(alignment: .trailing, spacing: 12) {
             ZStack(alignment: .bottomTrailing) {
                 TextEditor(text: $inputText)
-                    .font(.system(size: 17))
+                    .font(.system(size: 16))
                     .scrollContentBackground(.hidden)
-                    .padding(18)
-                    .padding(.bottom, 26)
-                    .frame(minHeight: 148)
+                    .padding(15)
+                    .padding(.bottom, 24)
+                    .frame(minHeight: 124)
                     .background(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
                             .fill(Color(nsColor: .textBackgroundColor))
                     )
                     .overlay(
-                        RoundedRectangle(cornerRadius: 12, style: .continuous)
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
                             .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
                     )
                 
                 Text("\(inputText.count) / \(inputLimit)")
-                    .font(.system(size: 14, weight: .medium, design: .rounded))
+                    .font(.system(size: 13, weight: .medium, design: .rounded))
                     .foregroundStyle(.secondary)
-                    .padding(.trailing, 18)
-                    .padding(.bottom, 16)
+                    .padding(.trailing, 16)
+                    .padding(.bottom, 14)
             }
             
             Button(action: {
                 speakText(inputText)
             }) {
                 Label("Speak", systemImage: "play.fill")
-                    .font(.system(size: 18, weight: .bold))
-                    .frame(width: 176, height: 54)
+                    .font(.system(size: 17, weight: .bold))
+                    .frame(width: 164, height: 50)
             }
             .buttonStyle(OrangeProminentButtonStyle())
             .disabled(!canSpeak)
@@ -239,7 +240,7 @@ struct ContentView: View {
     
     private var settingsCard: some View {
         SettingsCard {
-            VStack(spacing: 18) {
+            VStack(spacing: 14) {
                 SettingsRow(symbolName: "globe", title: "Language") {
                     if availableLanguages.isEmpty {
                         PlaceholderValue(text: isInitializing ? "Loading languages..." : "Add credentials first")
@@ -252,7 +253,7 @@ struct ContentView: View {
                         }
                         .labelsHidden()
                         .pickerStyle(.menu)
-                        .controlSize(.large)
+                        .controlSize(.regular)
                         .frame(maxWidth: .infinity)
                         .onChange(of: selectedLanguage) {
                             selectedVoice = nil
@@ -275,28 +276,28 @@ struct ContentView: View {
                         }
                         .labelsHidden()
                         .pickerStyle(.menu)
-                        .controlSize(.large)
+                        .controlSize(.regular)
                         .frame(maxWidth: .infinity)
                     }
                 }
                 
                 SettingsRow(symbolName: "speedometer", title: "Speaking Speed") {
-                    HStack(spacing: 14) {
+                    HStack(spacing: 12) {
                         Text("-")
-                            .font(.title3.weight(.medium))
+                            .font(.system(size: 18, weight: .medium))
                             .foregroundStyle(.secondary)
                         
                         Slider(value: $speakingSpeed, in: 0.25...4.0)
                             .tint(.orange)
                         
                         Text("+")
-                            .font(.title3.weight(.medium))
+                            .font(.system(size: 18, weight: .medium))
                             .foregroundStyle(.secondary)
                         
                         Text("\(speakingSpeed, specifier: "%.2f")x")
-                            .font(.system(size: 16, weight: .semibold, design: .rounded))
+                            .font(.system(size: 15, weight: .semibold, design: .rounded))
                             .foregroundStyle(.orange)
-                            .frame(width: 70, height: 38)
+                            .frame(width: 66, height: 34)
                             .background(
                                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                                     .fill(Color(nsColor: .textBackgroundColor))
@@ -309,13 +310,13 @@ struct ContentView: View {
                 }
                 
                 Divider()
-                    .padding(.leading, 96)
+                    .padding(.leading, 76)
                 
                 SettingsRow(symbolName: "keyboard", title: "Hotkey") {
-                    HStack(spacing: 12) {
+                    HStack(spacing: 10) {
                         Text(editingHotkey ? "Press keys" : hotkey)
-                            .font(.system(size: 16, weight: .medium))
-                            .frame(maxWidth: .infinity, minHeight: 38)
+                            .font(.system(size: 15, weight: .medium))
+                            .frame(maxWidth: .infinity, minHeight: 34)
                             .background(
                                 RoundedRectangle(cornerRadius: 8, style: .continuous)
                                     .fill(Color(nsColor: .textBackgroundColor))
@@ -328,8 +329,8 @@ struct ContentView: View {
                         Button(editingHotkey ? "Listening..." : "Change...") {
                             editingHotkey = true
                         }
-                        .controlSize(.large)
-                        .frame(width: 132)
+                        .controlSize(.regular)
+                        .frame(width: 122)
                         .disabled(editingHotkey)
                     }
                 }
@@ -339,44 +340,54 @@ struct ContentView: View {
     
     private var cloudCard: some View {
         SettingsCard {
-            HStack(spacing: 20) {
+            HStack(spacing: 16) {
                 IconTile(symbolName: cloudStatus.symbolName, color: cloudStatus.color)
                 
                 VStack(alignment: .leading, spacing: 4) {
                     Text("Google Cloud")
-                        .font(.system(size: 18, weight: .semibold))
+                        .font(.system(size: 17, weight: .semibold))
                     
                     Text(cloudStatus.title)
-                        .font(.system(size: 16, weight: .semibold))
+                        .font(.system(size: 15, weight: .semibold))
                         .foregroundStyle(cloudStatus.color)
                 }
                 
-                Spacer(minLength: 20)
+                Spacer(minLength: 16)
                 
-                Button("Change Credentials...") {
-                    isCredentialsSheetPresented = true
+                HStack(spacing: 10) {
+                    if !credentials.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                        Button("Remove") {
+                            clearCredentials()
+                        }
+                        .controlSize(.regular)
+                    }
+
+                    Button(credentials.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Set Up Google Cloud..." : "Manage Credentials...") {
+                        isCredentialsSheetPresented = true
+                    }
+                    .controlSize(.regular)
                 }
-                .controlSize(.large)
             }
         }
     }
     
-    private func saveCredentials(_ newCredentials: String) {
+    private func saveValidatedCredentials(_ newCredentials: String, voices: [TTSVoice]) {
         let trimmedCredentials = newCredentials.trimmingCharacters(in: .whitespacesAndNewlines)
-        let didChangeCredentials = trimmedCredentials != credentials
         credentials = trimmedCredentials
         isCredentialsSheetPresented = false
-        
-        if trimmedCredentials.isEmpty {
-            GoogleTTSAPI.resetSharedInstance()
-            api = nil
-            availableVoices = []
-            availableLanguages = []
-            selectedVoice = nil
-            result = ""
-        } else if !didChangeCredentials {
-            startLoadVoicesTask(resetAPI: true)
-        }
+        GoogleTTSAPI.resetSharedInstance()
+        applyVoices(voices)
+        result = "Google Cloud connected. Ready to play."
+    }
+
+    private func clearCredentials() {
+        credentials = ""
+        GoogleTTSAPI.resetSharedInstance()
+        api = nil
+        availableVoices = []
+        availableLanguages = []
+        selectedVoice = nil
+        result = ""
     }
     
     private func startLoadVoicesTask(resetAPI: Bool) {
@@ -395,39 +406,51 @@ struct ContentView: View {
         result = "Loading voices..."
         GoogleTTSAPI.getInstance(credentialsJson: credentials) { api in
             self.api = api
-            api.fetchVoices { voices in
+            api.fetchVoices { fetchResult in
                 DispatchQueue.main.async {
-                    let selectableVoices = voices.filter(isSelectableGoogleVoice).sorted(by: compareVoicesByCategory)
-                    self.availableVoices = selectableVoices
-                    
-                    let allLanguages = Set(selectableVoices.flatMap { $0.languageCodes })
-                    self.availableLanguages = Array(allLanguages).sorted()
-                    
-                    if self.selectedVoice == nil || !selectableVoices.contains(where: { $0.name == self.selectedVoice?.name }) {
-                        let savedVoiceName = Preferences.shared.voiceName
-                        if !savedVoiceName.isEmpty {
-                            self.selectedVoice = selectableVoices.first { $0.name == savedVoiceName }
-                            if let voice = self.selectedVoice {
-                                self.selectedLanguage = voice.languageCodes.first ?? "en-US"
-                            }
+                    switch fetchResult {
+                    case .success(let voices):
+                        if voices.isEmpty {
+                            result = "Google Cloud connected, but no Text-to-Speech voices were returned. Try again in a moment."
+                        } else {
+                            applyVoices(voices)
+                            result = "Success! Ready to play"
                         }
-                        
-                        if self.selectedVoice == nil, let firstVoice = selectableVoices.first {
-                            self.selectedVoice = firstVoice
-                            self.selectedLanguage = firstVoice.languageCodes.first ?? "en-US"
-                        }
-                        
-                        Preferences.shared.language = selectedLanguage
-                    }
-                    if voices.isEmpty {
-                        result = "Failed to fetch voices, is the API key correct?"
-                    } else {
-                        result = "Success! Ready to play"
+                    case .failure(let error):
+                        self.availableVoices = []
+                        self.availableLanguages = []
+                        self.selectedVoice = nil
+                        result = GoogleTTSError.userMessage(for: error)
                     }
                                         
                     isInitializing = false
                 }
             }
+        }
+    }
+
+    private func applyVoices(_ voices: [TTSVoice]) {
+        let selectableVoices = voices.filter(isSelectableGoogleVoice).sorted(by: compareVoicesByCategory)
+        availableVoices = selectableVoices
+        
+        let allLanguages = Set(selectableVoices.flatMap { $0.languageCodes })
+        availableLanguages = Array(allLanguages).sorted()
+        
+        if selectedVoice == nil || !selectableVoices.contains(where: { $0.name == selectedVoice?.name }) {
+            let savedVoiceName = Preferences.shared.voiceName
+            if !savedVoiceName.isEmpty {
+                selectedVoice = selectableVoices.first { $0.name == savedVoiceName }
+                if let voice = selectedVoice {
+                    selectedLanguage = voice.languageCodes.first ?? "en-US"
+                }
+            }
+            
+            if selectedVoice == nil, let firstVoice = selectableVoices.first {
+                selectedVoice = firstVoice
+                selectedLanguage = firstVoice.languageCodes.first ?? "en-US"
+            }
+            
+            Preferences.shared.language = selectedLanguage
         }
     }
     
@@ -456,14 +479,14 @@ private struct SettingsCard<Content: View>: View {
     
     var body: some View {
         content
-            .padding(20)
+            .padding(16)
             .frame(maxWidth: .infinity, alignment: .leading)
             .background(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(Color(nsColor: .controlBackgroundColor))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .stroke(Color.secondary.opacity(0.18), lineWidth: 1)
             )
     }
@@ -475,16 +498,17 @@ private struct SettingsRow<Content: View>: View {
     @ViewBuilder let content: Content
     
     var body: some View {
-        HStack(spacing: 20) {
+        HStack(spacing: 16) {
             IconTile(symbolName: symbolName, color: .primary)
             
             Text(title)
-                .font(.system(size: 17, weight: .semibold))
-                .frame(width: 180, alignment: .leading)
+                .font(.system(size: 16, weight: .semibold))
+                .frame(width: 160, alignment: .leading)
             
             content
+                .frame(maxWidth: .infinity)
         }
-        .frame(minHeight: 52)
+        .frame(minHeight: 44)
     }
 }
 
@@ -494,15 +518,15 @@ private struct IconTile: View {
     
     var body: some View {
         Image(systemName: symbolName)
-            .font(.system(size: 23, weight: .semibold))
+            .font(.system(size: 20, weight: .semibold))
             .foregroundStyle(color)
-            .frame(width: 52, height: 52)
+            .frame(width: 44, height: 44)
             .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .fill(Color(nsColor: .textBackgroundColor))
             )
             .overlay(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
                     .stroke(Color.secondary.opacity(0.16), lineWidth: 1)
             )
     }
@@ -513,9 +537,9 @@ private struct PlaceholderValue: View {
     
     var body: some View {
         Text(text)
-            .font(.system(size: 16, weight: .medium))
+            .font(.system(size: 15, weight: .medium))
             .foregroundStyle(.secondary)
-            .frame(maxWidth: .infinity, minHeight: 38, alignment: .leading)
+            .frame(maxWidth: .infinity, minHeight: 34, alignment: .leading)
             .padding(.horizontal, 12)
             .background(
                 RoundedRectangle(cornerRadius: 8, style: .continuous)
@@ -532,38 +556,38 @@ private struct StatusCard: View {
     let status: ReadyStatus
     
     var body: some View {
-        HStack(spacing: 18) {
+        HStack(spacing: 14) {
             Image(systemName: status.symbolName)
-                .font(.system(size: 32, weight: .semibold))
+                .font(.system(size: 28, weight: .semibold))
                 .foregroundStyle(status.color)
                 .symbolEffect(.pulse, value: status.title)
-                .frame(width: 46, height: 46)
+                .frame(width: 38, height: 38)
             
             VStack(alignment: .leading, spacing: 4) {
                 Text(status.title)
-                    .font(.system(size: 18, weight: .bold))
+                    .font(.system(size: 17, weight: .bold))
                     .foregroundStyle(status.color)
                 
                 Text(status.message)
-                    .font(.system(size: 14, weight: .medium))
+                    .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(.secondary)
                     .lineLimit(2)
             }
             
-            Spacer(minLength: 20)
+            Spacer(minLength: 16)
             
             WaveformView(color: status.color)
-                .frame(width: 150, height: 42)
-                .opacity(status.title == "Ready" ? 1 : 0.35)
+                .frame(width: 118, height: 30)
+                .opacity(status.title == "Ready" ? 0.7 : 0.25)
         }
-        .padding(.horizontal, 20)
-        .padding(.vertical, 18)
+        .padding(.horizontal, 16)
+        .padding(.vertical, 14)
         .background(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .fill(Color(nsColor: .controlBackgroundColor))
         )
         .overlay(
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
                 .stroke(Color.secondary.opacity(0.18), lineWidth: 1)
         )
     }
@@ -592,62 +616,462 @@ private struct WaveformView: View {
                     }
                 }
             }
-            .stroke(color.opacity(0.62), style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+            .stroke(color.opacity(0.52), style: StrokeStyle(lineWidth: 2.5, lineCap: .round, lineJoin: .round))
         }
         .accessibilityHidden(true)
     }
 }
 
-private struct CredentialsSheet: View {
+private enum CredentialSetupMode {
+    case guided
+    case importExisting
+}
+
+private enum CredentialValidationState {
+    case idle
+    case validating(String)
+    case success(String)
+    case failure(String)
+}
+
+private struct CredentialSetupStep: Identifiable {
+    let id: String
+    let title: String
+    let message: String
+    let buttonTitle: String
+    let url: URL
+
+    static let defaults: [CredentialSetupStep] = [
+        CredentialSetupStep(
+            id: "project",
+            title: "Create or select a project",
+            message: "Choose the Google Cloud project Smooth Talker should use.",
+            buttonTitle: "Open Projects",
+            url: URL(string: "https://console.cloud.google.com/projectselector2/home/dashboard")!
+        ),
+        CredentialSetupStep(
+            id: "billing",
+            title: "Enable billing",
+            message: "Attach a billing account. Google Cloud requires this even when free quota covers your usage.",
+            buttonTitle: "Open Billing",
+            url: URL(string: "https://console.cloud.google.com/billing")!
+        ),
+        CredentialSetupStep(
+            id: "api",
+            title: "Enable Text-to-Speech",
+            message: "Turn on the Cloud Text-to-Speech API for the selected project.",
+            buttonTitle: "Open API",
+            url: URL(string: "https://console.cloud.google.com/apis/library/texttospeech.googleapis.com")!
+        ),
+        CredentialSetupStep(
+            id: "service-account",
+            title: "Create credentials",
+            message: "Create a service account, then add a JSON key from its Keys tab.",
+            buttonTitle: "Open Service Accounts",
+            url: URL(string: "https://console.cloud.google.com/iam-admin/serviceaccounts")!
+        )
+    ]
+}
+
+private struct CredentialsSetupSheet: View {
     @Environment(\.dismiss) private var dismiss
+    @State private var mode: CredentialSetupMode
     @State private var draftCredentials: String
-    let onSave: (String) -> Void
+    @State private var validationState: CredentialValidationState = .idle
+    @State private var openedStepIDs: Set<String> = []
+    @State private var isFileImporterPresented = false
+    @State private var isDropTargeted = false
+    @State private var importedFileName: String?
+    let onSave: (String, [TTSVoice]) -> Void
     
-    init(credentials: String, onSave: @escaping (String) -> Void) {
+    init(credentials: String, onSave: @escaping (String, [TTSVoice]) -> Void) {
         _draftCredentials = State(initialValue: credentials)
+        _mode = State(initialValue: credentials.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? .guided : .importExisting)
         self.onSave = onSave
     }
     
     var body: some View {
-        VStack(alignment: .leading, spacing: 18) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Google Cloud Credentials")
-                    .font(.title2.bold())
-                
-                Text("Paste the service account JSON key used for Google Text-to-Speech.")
-                    .foregroundStyle(.secondary)
-            }
-            
-            TextEditor(text: $draftCredentials)
-                .font(.system(.body, design: .monospaced))
-                .scrollContentBackground(.hidden)
-                .padding(10)
-                .frame(width: 620, height: 280)
-                .background(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .fill(Color(nsColor: .textBackgroundColor))
-                )
-                .overlay(
-                    RoundedRectangle(cornerRadius: 10, style: .continuous)
-                        .stroke(Color.secondary.opacity(0.25), lineWidth: 1)
-                )
-            
-            HStack {
-                Spacer()
-                
-                Button("Cancel") {
-                    dismiss()
+        HStack(spacing: 0) {
+            setupSidebar
+
+            Divider()
+
+            ScrollView {
+                VStack(alignment: .leading, spacing: 22) {
+                    switch mode {
+                    case .guided:
+                        guidedSetupContent
+                    case .importExisting:
+                        importExistingContent
+                    }
+
+                    Divider()
+
+                    footer
                 }
-                .keyboardShortcut(.cancelAction)
-                
-                Button("Save") {
-                    onSave(draftCredentials)
-                }
-                .keyboardShortcut(.defaultAction)
-                .buttonStyle(.borderedProminent)
+                .padding(26)
             }
         }
-        .padding(24)
+        .frame(width: 860, height: 640)
+        .fileImporter(
+            isPresented: $isFileImporterPresented,
+            allowedContentTypes: [.json, .plainText, .data],
+            allowsMultipleSelection: false
+        ) { result in
+            switch result {
+            case .success(let urls):
+                if let url = urls.first {
+                    readCredentialsFile(url)
+                }
+            case .failure(let error):
+                validationState = .failure(error.localizedDescription)
+            }
+        }
+    }
+
+    private var setupSidebar: some View {
+        VStack(alignment: .leading, spacing: 16) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Google Cloud")
+                    .font(.system(size: 24, weight: .bold, design: .rounded))
+
+                Text("Connect Smooth Talker to your own Text-to-Speech project.")
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            .padding(.bottom, 8)
+
+            CredentialSetupModeButton(
+                title: "Set Up Google Cloud",
+                symbolName: "sparkles",
+                isSelected: mode == .guided
+            ) {
+                mode = .guided
+            }
+
+            CredentialSetupModeButton(
+                title: "Import Existing",
+                symbolName: "doc.badge.plus",
+                isSelected: mode == .importExisting
+            ) {
+                mode = .importExisting
+            }
+
+            Spacer()
+
+            Text("Your credentials are saved locally in app settings after validation.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+        }
+        .padding(22)
+        .frame(width: 230)
+        .frame(maxHeight: .infinity, alignment: .topLeading)
+        .background(Color(nsColor: .controlBackgroundColor))
+    }
+
+    private var guidedSetupContent: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Set Up Google Cloud")
+                    .font(.title2.bold())
+
+                Text("Follow the steps in Google Cloud, download the service account JSON key, then drag it back here.")
+                    .foregroundStyle(.secondary)
+            }
+
+            VStack(spacing: 10) {
+                ForEach(CredentialSetupStep.defaults) { step in
+                    CredentialSetupStepRow(
+                        step: step,
+                        isOpened: openedStepIDs.contains(step.id)
+                    ) {
+                        openedStepIDs.insert(step.id)
+                        NSWorkspace.shared.open(step.url)
+                    }
+                }
+            }
+
+            credentialsImportArea(title: "Drop the downloaded JSON here")
+        }
+    }
+
+    private var importExistingContent: some View {
+        VStack(alignment: .leading, spacing: 20) {
+            VStack(alignment: .leading, spacing: 6) {
+                Text("Import Existing Credentials")
+                    .font(.title2.bold())
+
+                Text("Choose a service account JSON key you already downloaded from Google Cloud.")
+                    .foregroundStyle(.secondary)
+            }
+
+            credentialsImportArea(title: "Drop your service account JSON here")
+        }
+    }
+
+    private func credentialsImportArea(title: String) -> some View {
+        VStack(alignment: .leading, spacing: 14) {
+            VStack(spacing: 12) {
+                Image(systemName: isDropTargeted ? "arrow.down.doc.fill" : "doc.badge.plus")
+                    .font(.system(size: 38, weight: .semibold))
+                    .foregroundStyle(.orange)
+
+                VStack(spacing: 4) {
+                    Text(importedFileName ?? title)
+                        .font(.system(size: 17, weight: .semibold))
+
+                    Text("Use the JSON key file downloaded from the service account Keys tab.")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.secondary)
+                }
+
+                Button("Choose JSON File...") {
+                    isFileImporterPresented = true
+                }
+                .controlSize(.large)
+            }
+            .frame(maxWidth: .infinity, minHeight: 190)
+            .background(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .fill(isDropTargeted ? Color.orange.opacity(0.12) : Color(nsColor: .textBackgroundColor))
+            )
+            .overlay(
+                RoundedRectangle(cornerRadius: 12, style: .continuous)
+                    .stroke(isDropTargeted ? Color.orange : Color.secondary.opacity(0.22), style: StrokeStyle(lineWidth: 1.5, dash: [7, 5]))
+            )
+            .onDrop(of: [UTType.fileURL, .json, .plainText], isTargeted: $isDropTargeted, perform: handleDrop)
+
+            VStack(alignment: .leading, spacing: 8) {
+                Text("Paste JSON")
+                    .font(.system(size: 13, weight: .semibold))
+                    .foregroundStyle(.secondary)
+
+                TextEditor(text: $draftCredentials)
+                    .font(.system(.body, design: .monospaced))
+                    .scrollContentBackground(.hidden)
+                    .padding(10)
+                    .frame(minHeight: 130)
+                    .background(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .fill(Color(nsColor: .textBackgroundColor))
+                    )
+                    .overlay(
+                        RoundedRectangle(cornerRadius: 10, style: .continuous)
+                            .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
+                    )
+                    .onChange(of: draftCredentials) {
+                        importedFileName = nil
+                        validationState = .idle
+                    }
+            }
+
+            validationStatus
+        }
+    }
+
+    @ViewBuilder
+    private var validationStatus: some View {
+        switch validationState {
+        case .idle:
+            EmptyView()
+        case .validating(let message):
+            Label(message, systemImage: "arrow.triangle.2.circlepath")
+                .foregroundStyle(.orange)
+                .font(.system(size: 14, weight: .medium))
+        case .success(let message):
+            Label(message, systemImage: "checkmark.circle.fill")
+                .foregroundStyle(.green)
+                .font(.system(size: 14, weight: .medium))
+        case .failure(let message):
+            Label(message, systemImage: "exclamationmark.triangle.fill")
+                .foregroundStyle(.red)
+                .font(.system(size: 14, weight: .medium))
+                .fixedSize(horizontal: false, vertical: true)
+        }
+    }
+
+    private var footer: some View {
+        HStack {
+            Button("Cancel") {
+                dismiss()
+            }
+            .keyboardShortcut(.cancelAction)
+
+            Spacer()
+
+            Button("Validate and Connect") {
+                validateAndConnect()
+            }
+            .keyboardShortcut(.defaultAction)
+            .buttonStyle(.borderedProminent)
+            .disabled(!canValidate)
+        }
+    }
+
+    private var canValidate: Bool {
+        if case .validating = validationState {
+            return false
+        }
+
+        return !draftCredentials.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private func validateAndConnect() {
+        let trimmedCredentials = draftCredentials.trimmingCharacters(in: .whitespacesAndNewlines)
+
+        do {
+            let info = try GoogleServiceAccountCredentials.validate(trimmedCredentials)
+            validationState = .validating("Checking \(info.projectID) with Google Cloud...")
+        } catch {
+            validationState = .failure(error.localizedDescription)
+            return
+        }
+
+        GoogleTTSAPI.resetSharedInstance()
+        GoogleTTSAPI.getInstance(credentialsJson: trimmedCredentials) { api in
+            api.fetchVoices { result in
+                DispatchQueue.main.async {
+                    switch result {
+                    case .success(let voices):
+                        guard !voices.isEmpty else {
+                            validationState = .failure("Google Cloud connected, but no Text-to-Speech voices were returned. Try again in a moment.")
+                            GoogleTTSAPI.resetSharedInstance()
+                            return
+                        }
+
+                        onSave(trimmedCredentials, voices)
+                        validationState = .success("Connected to Google Cloud.")
+                    case .failure(let error):
+                        validationState = .failure(GoogleTTSError.userMessage(for: error))
+                        GoogleTTSAPI.resetSharedInstance()
+                    }
+                }
+            }
+        }
+    }
+
+    private func handleDrop(_ providers: [NSItemProvider]) -> Bool {
+        if let fileProvider = providers.first(where: { $0.hasItemConformingToTypeIdentifier(UTType.fileURL.identifier) }) {
+            fileProvider.loadDataRepresentation(forTypeIdentifier: UTType.fileURL.identifier) { data, _ in
+                guard let data,
+                      let url = URL(dataRepresentation: data, relativeTo: nil) else { return }
+                readCredentialsFile(url)
+            }
+            return true
+        }
+
+        if let textProvider = providers.first(where: { $0.hasItemConformingToTypeIdentifier(UTType.json.identifier) || $0.hasItemConformingToTypeIdentifier(UTType.plainText.identifier) }) {
+            let typeIdentifier = textProvider.hasItemConformingToTypeIdentifier(UTType.json.identifier) ? UTType.json.identifier : UTType.plainText.identifier
+            textProvider.loadDataRepresentation(forTypeIdentifier: typeIdentifier) { data, _ in
+                guard let data,
+                      let text = String(data: data, encoding: .utf8) else { return }
+                DispatchQueue.main.async {
+                    draftCredentials = text
+                    importedFileName = nil
+                    validationState = .idle
+                }
+            }
+            return true
+        }
+
+        return false
+    }
+
+    private func readCredentialsFile(_ url: URL) {
+        DispatchQueue.global(qos: .userInitiated).async {
+            let didStartAccessing = url.startAccessingSecurityScopedResource()
+            defer {
+                if didStartAccessing {
+                    url.stopAccessingSecurityScopedResource()
+                }
+            }
+
+            do {
+                let text = try String(contentsOf: url, encoding: .utf8)
+                DispatchQueue.main.async {
+                    draftCredentials = text
+                    importedFileName = url.lastPathComponent
+                    validationState = .idle
+                }
+            } catch {
+                DispatchQueue.main.async {
+                    validationState = .failure(error.localizedDescription)
+                }
+            }
+        }
+    }
+}
+
+private struct CredentialSetupModeButton: View {
+    let title: String
+    let symbolName: String
+    let isSelected: Bool
+    let action: () -> Void
+
+    var body: some View {
+        Button(action: action) {
+            HStack(spacing: 10) {
+                Image(systemName: symbolName)
+                    .font(.system(size: 16, weight: .semibold))
+                    .frame(width: 22)
+
+                Text(title)
+                    .font(.system(size: 14, weight: .semibold))
+
+                Spacer()
+            }
+            .padding(.horizontal, 12)
+            .frame(height: 42)
+            .foregroundStyle(isSelected ? .white : .primary)
+            .background(
+                RoundedRectangle(cornerRadius: 8, style: .continuous)
+                    .fill(isSelected ? Color.orange : Color.clear)
+            )
+        }
+        .buttonStyle(.plain)
+    }
+}
+
+private struct CredentialSetupStepRow: View {
+    let step: CredentialSetupStep
+    let isOpened: Bool
+    let onOpen: () -> Void
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 14) {
+            Image(systemName: isOpened ? "checkmark.circle.fill" : "circle")
+                .font(.system(size: 20, weight: .semibold))
+                .foregroundStyle(isOpened ? .green : .secondary)
+                .frame(width: 26, height: 26)
+
+            VStack(alignment: .leading, spacing: 4) {
+                Text(step.title)
+                    .font(.system(size: 16, weight: .semibold))
+
+                Text(step.message)
+                    .font(.system(size: 13, weight: .medium))
+                    .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+
+            Spacer(minLength: 12)
+
+            Button(step.buttonTitle) {
+                onOpen()
+            }
+            .controlSize(.regular)
+        }
+        .padding(14)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(nsColor: .textBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.secondary.opacity(0.16), lineWidth: 1)
+        )
     }
 }
 
@@ -714,7 +1138,7 @@ private struct OrangeProminentButtonStyle: ButtonStyle {
                 RoundedRectangle(cornerRadius: 10, style: .continuous)
                     .fill(Color.orange.gradient)
             )
-            .shadow(color: .orange.opacity(configuration.isPressed ? 0.12 : 0.26), radius: configuration.isPressed ? 4 : 12, y: configuration.isPressed ? 1 : 5)
+            .shadow(color: .orange.opacity(configuration.isPressed ? 0.1 : 0.18), radius: configuration.isPressed ? 3 : 8, y: configuration.isPressed ? 1 : 3)
             .opacity(isEnabled ? (configuration.isPressed ? 0.86 : 1) : 0.48)
     }
 }
