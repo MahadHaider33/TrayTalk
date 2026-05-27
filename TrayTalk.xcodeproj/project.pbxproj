@@ -11,7 +11,7 @@
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
-		A825CEBE2D1ABBF3001139D1 /* TrayTalk.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = TrayTalk.app; sourceTree = BUILT_PRODUCTS_DIR; };
+		A825CEBE2D1ABBF3001139D1 /* Smooth Talker.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Smooth Talker.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
 
 /* Begin PBXFileSystemSynchronizedRootGroup section */
@@ -46,7 +46,7 @@
 		A825CEBF2D1ABBF3001139D1 /* Products */ = {
 			isa = PBXGroup;
 			children = (
-				A825CEBE2D1ABBF3001139D1 /* TrayTalk.app */,
+				A825CEBE2D1ABBF3001139D1 /* Smooth Talker.app */,
 			);
 			name = Products;
 			sourceTree = "<group>";
@@ -81,7 +81,7 @@
 				A825CEEF2D1AEF5B001139D1 /* OAuth2 */,
 			);
 			productName = TrayTalk;
-			productReference = A825CEBE2D1ABBF3001139D1 /* TrayTalk.app */;
+			productReference = A825CEBE2D1ABBF3001139D1 /* Smooth Talker.app */;
 			productType = "com.apple.product-type.application";
 		};
 /* End PBXNativeTarget section */
@@ -280,7 +280,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "TrayTalk-Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = TrayTalk;
+				INFOPLIST_KEY_CFBundleDisplayName = "Smooth Talker";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSAppleEventsUsageDescription = "Uses appleEvents to retrieve the current selected text when a hotkey is pressed.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
@@ -291,7 +291,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 14.6;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.kriyak.TrayTalk;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = "Smooth Talker";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 			};
@@ -315,7 +315,7 @@
 				ENABLE_PREVIEWS = YES;
 				GENERATE_INFOPLIST_FILE = YES;
 				INFOPLIST_FILE = "TrayTalk-Info.plist";
-				INFOPLIST_KEY_CFBundleDisplayName = TrayTalk;
+				INFOPLIST_KEY_CFBundleDisplayName = "Smooth Talker";
 				INFOPLIST_KEY_LSApplicationCategoryType = "public.app-category.utilities";
 				INFOPLIST_KEY_NSAppleEventsUsageDescription = "Uses appleEvents to retrieve the current selected text when a hotkey is pressed.";
 				INFOPLIST_KEY_NSHumanReadableCopyright = "";
@@ -326,7 +326,7 @@
 				MACOSX_DEPLOYMENT_TARGET = 14.6;
 				MARKETING_VERSION = 1.0;
 				PRODUCT_BUNDLE_IDENTIFIER = com.kriyak.TrayTalk;
-				PRODUCT_NAME = "$(TARGET_NAME)";
+				PRODUCT_NAME = "Smooth Talker";
 				SWIFT_EMIT_LOC_STRINGS = YES;
 				SWIFT_VERSION = 5.0;
 			};

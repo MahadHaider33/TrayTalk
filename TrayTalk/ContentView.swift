@@ -36,6 +36,14 @@ struct ContentView: View {
         }
     }
     
+    private var filteredVoiceGroups: [VoiceGroup] {
+        VoiceCategory.allCases.compactMap { category in
+            let voices = filteredVoices.filter { VoiceCategory(for: $0.name) == category }
+            guard !voices.isEmpty else { return nil }
+            return VoiceGroup(category: category, voices: voices)
+        }
+    }
+    
     var body: some View {
         VStack(spacing: 20) {
             Group {
@@ -91,8 +99,12 @@ struct ContentView: View {
                             .foregroundColor(.gray)
                     } else {
                         Picker("Voice", selection: $selectedVoice) {
-                            ForEach(filteredVoices, id: \.name) { voice in
-                                Text(voice.displayName).tag(voice as TTSVoice?)
+                            ForEach(filteredVoiceGroups) { group in
+                                Section(header: Text(group.category.title)) {
+                                    ForEach(group.voices, id: \.name) { voice in
+                                        Text(voice.displayName).tag(voice as TTSVoice?)
+                                    }
+                                }
                             }
                         }
                         .pickerStyle(MenuPickerStyle())
@@ -170,26 +182,25 @@ struct ContentView: View {
             self.api = api
             api.fetchVoices { voices in
                 DispatchQueue.main.async {
-                    self.availableVoices = voices.sorted { v1, v2 in
-                        v1.name < v2.name
-                    }
+                    let selectableVoices = voices.filter(isSelectableGoogleVoice).sorted(by: compareVoicesByCategory)
+                    self.availableVoices = selectableVoices
                     
                     // Extract unique languages
-                    let allLanguages = Set(voices.flatMap { $0.languageCodes })
+                    let allLanguages = Set(selectableVoices.flatMap { $0.languageCodes })
                     self.availableLanguages = Array(allLanguages).sorted()
                     
                     // Try to restore previous voice selection
-                    if self.selectedVoice == nil {
+                    if self.selectedVoice == nil || !selectableVoices.contains(where: { $0.name == self.selectedVoice?.name }) {
                         let savedVoiceName = Preferences.shared.voiceName
                         if !savedVoiceName.isEmpty {
-                            self.selectedVoice = voices.first { $0.name == savedVoiceName }
+                            self.selectedVoice = selectableVoices.first { $0.name == savedVoiceName }
                             // If we found a saved voice, set its language
                             if let voice = self.selectedVoice {
                                 self.selectedLanguage = voice.languageCodes.first ?? "en-US"
                             }
                         }
                         // If no saved voice or saved voice not found, default to first voice
-                        if self.selectedVoice == nil, let firstVoice = voices.first {
+                        if self.selectedVoice == nil, let firstVoice = selectableVoices.first {
                             self.selectedVoice = firstVoice
                             self.selectedLanguage = firstVoice.languageCodes.first ?? "en-US"
                         }
@@ -208,8 +219,92 @@ struct ContentView: View {
         }
     }
     
+    private func isSelectableGoogleVoice(_ voice: TTSVoice) -> Bool {
+        voice.name.range(of: #"^[a-z]{2,3}-[A-Z]{2}-"#, options: .regularExpression) != nil
+    }
+    
+    private func compareVoicesByCategory(_ lhs: TTSVoice, _ rhs: TTSVoice) -> Bool {
+        let lhsCategory = VoiceCategory(for: lhs.name)
+        let rhsCategory = VoiceCategory(for: rhs.name)
+        
+        if lhsCategory != rhsCategory {
+            return lhsCategory.rawValue < rhsCategory.rawValue
+        }
+        
+        return lhs.name < rhs.name
+    }
+    
     private func speakText(_ text: String) {
         SpeechManager.shared.speak(text)
+    }
+}
+
+private struct VoiceGroup: Identifiable {
+    let category: VoiceCategory
+    let voices: [TTSVoice]
+    
+    var id: VoiceCategory { category }
+}
+
+private enum VoiceCategory: Int, CaseIterable {
+    case standard
+    case waveNet
+    case casual
+    case neural2
+    case news
+    case polyglot
+    case chirpHD
+    case chirp3HD
+    case studio
+    case other
+    
+    init(for voiceName: String) {
+        if voiceName.contains("-Standard-") {
+            self = .standard
+        } else if voiceName.contains("-Wavenet-") || voiceName.contains("-WaveNet-") {
+            self = .waveNet
+        } else if voiceName.contains("-Casual-") {
+            self = .casual
+        } else if voiceName.contains("-Neural2-") {
+            self = .neural2
+        } else if voiceName.contains("-News-") {
+            self = .news
+        } else if voiceName.contains("-Polyglot-") {
+            self = .polyglot
+        } else if voiceName.contains("-Chirp-HD-") {
+            self = .chirpHD
+        } else if voiceName.contains("-Chirp3-HD-") {
+            self = .chirp3HD
+        } else if voiceName.contains("-Studio-") {
+            self = .studio
+        } else {
+            self = .other
+        }
+    }
+    
+    var title: String {
+        switch self {
+        case .standard:
+            return "Standard"
+        case .waveNet:
+            return "WaveNet"
+        case .casual:
+            return "Casual"
+        case .neural2:
+            return "Neural2"
+        case .news:
+            return "News"
+        case .polyglot:
+            return "Polyglot"
+        case .chirpHD:
+            return "Chirp HD"
+        case .chirp3HD:
+            return "Chirp3 HD"
+        case .studio:
+            return "Studio"
+        case .other:
+            return "Other"
+        }
     }
 }
 

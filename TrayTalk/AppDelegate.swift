@@ -26,7 +26,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         statusBarItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusBarItem?.button {
             button.target = self
-            button.image = NSImage(systemSymbolName: "speaker.wave.2.bubble.left", accessibilityDescription: "TrayTalk")
+            button.image = NSImage(systemSymbolName: "speaker.wave.2.bubble.left", accessibilityDescription: "Smooth Talker")
         }
         
         let menu = NSMenu()
@@ -78,7 +78,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             defer: false
         )
         
-        settingsWindow.title = "TrayTalk"
+        settingsWindow.title = "Smooth Talker"
         settingsWindow.contentView = NSHostingView(rootView: contentView)
         
         settingsWindow.center()
@@ -95,7 +95,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if loading {
             statusBarItem?.button?.image = NSImage(systemSymbolName: "arrow.triangle.2.circlepath.icloud", accessibilityDescription: "Loading")
         } else {
-            statusBarItem?.button?.image = NSImage(systemSymbolName: "speaker.wave.2.bubble.left", accessibilityDescription: "TrayTalk")
+            statusBarItem?.button?.image = NSImage(systemSymbolName: "speaker.wave.2.bubble.left", accessibilityDescription: "Smooth Talker")
         }
     }
     
