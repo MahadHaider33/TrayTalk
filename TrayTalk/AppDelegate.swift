@@ -1,6 +1,6 @@
 //
 //  AppDelegate.swift
-//  TrayTalk
+//  Smooth Talker
 //
 //  Created by Sem Visscher on 25/12/2024.
 //

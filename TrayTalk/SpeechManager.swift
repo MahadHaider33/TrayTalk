@@ -1,6 +1,6 @@
 //
 //  SpeechManager.swift
-//  TrayTalk
+//  Smooth Talker
 //
 //  Created by Sem Visscher on 24/12/2024.
 //

@@ -1,6 +1,6 @@
 //
 //  ContentView.swift
-//  TrayTalk
+//  Smooth Talker
 //
 //  Created by Sem Visscher on 24/12/2024.
 //
@@ -637,38 +637,70 @@ private enum CredentialValidationState {
 private struct CredentialSetupStep: Identifiable {
     let id: String
     let title: String
-    let message: String
+    let subtitle: String
+    let instructions: [String]
     let buttonTitle: String
     let url: URL
 
     static let defaults: [CredentialSetupStep] = [
         CredentialSetupStep(
             id: "project",
-            title: "Create or select a project",
-            message: "Choose the Google Cloud project Smooth Talker should use.",
+            title: "Create a Google Cloud project",
+            subtitle: "Make a dedicated project for Smooth Talker.",
+            instructions: [
+                "Click \"Open Projects\".",
+                "Press \"New Project\".",
+                "Name the project \"Smooth Talker\".",
+                "Click \"Create\".",
+                "Return here after the project opens."
+            ],
             buttonTitle: "Open Projects",
             url: URL(string: "https://console.cloud.google.com/projectselector2/home/dashboard")!
         ),
         CredentialSetupStep(
             id: "billing",
             title: "Enable billing",
-            message: "Attach a billing account. Google Cloud requires this even when free quota covers your usage.",
+            subtitle: "Google Cloud requires active billing before Text-to-Speech can run.",
+            instructions: [
+                "Click \"Open Billing\".",
+                "Press \"Manage Billing\" if Google asks you to choose a billing page.",
+                "Press \"Link Billing Account\".",
+                "Add a payment method if prompted.",
+                "Return here when the billing status says \"Active\"."
+            ],
             buttonTitle: "Open Billing",
             url: URL(string: "https://console.cloud.google.com/billing")!
         ),
         CredentialSetupStep(
             id: "api",
-            title: "Enable Text-to-Speech",
-            message: "Turn on the Cloud Text-to-Speech API for the selected project.",
+            title: "Enable speech voices",
+            subtitle: "Turn on the Cloud Text-to-Speech API for this project.",
+            instructions: [
+                "Click \"Open API\".",
+                "Press the blue \"Enable\" button.",
+                "Wait for the API dashboard to load.",
+                "Return here afterward."
+            ],
             buttonTitle: "Open API",
             url: URL(string: "https://console.cloud.google.com/apis/library/texttospeech.googleapis.com")!
         ),
         CredentialSetupStep(
             id: "service-account",
-            title: "Create credentials",
-            message: "Create a service account, then add a JSON key from its Keys tab.",
-            buttonTitle: "Open Service Accounts",
-            url: URL(string: "https://console.cloud.google.com/iam-admin/serviceaccounts")!
+            title: "Create a key file",
+            subtitle: "Download the JSON key Smooth Talker will use to talk to Google Cloud.",
+            instructions: [
+                "Click \"Open Credentials\".",
+                "Press \"+ Create Credentials\".",
+                "Select \"Service Account\".",
+                "Continue through the service account setup.",
+                "Open the \"Keys\" tab.",
+                "Press \"Add Key\" and choose \"Create New Key\".",
+                "Choose \"JSON\".",
+                "The key file will download automatically.",
+                "Drag the downloaded JSON file into Smooth Talker."
+            ],
+            buttonTitle: "Open Credentials",
+            url: URL(string: "https://console.cloud.google.com/apis/credentials")!
         )
     ]
 }
@@ -1040,28 +1072,47 @@ private struct CredentialSetupStepRow: View {
     let onOpen: () -> Void
 
     var body: some View {
-        HStack(alignment: .top, spacing: 14) {
-            Image(systemName: isOpened ? "checkmark.circle.fill" : "circle")
-                .font(.system(size: 20, weight: .semibold))
-                .foregroundStyle(isOpened ? .green : .secondary)
-                .frame(width: 26, height: 26)
+        VStack(alignment: .leading, spacing: 14) {
+            HStack(alignment: .top, spacing: 14) {
+                Image(systemName: isOpened ? "checkmark.circle.fill" : "circle")
+                    .font(.system(size: 20, weight: .semibold))
+                    .foregroundStyle(isOpened ? .green : .secondary)
+                    .frame(width: 26, height: 26)
 
-            VStack(alignment: .leading, spacing: 4) {
-                Text(step.title)
-                    .font(.system(size: 16, weight: .semibold))
+                VStack(alignment: .leading, spacing: 5) {
+                    Text(step.title)
+                        .font(.system(size: 17, weight: .semibold))
 
-                Text(step.message)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+                    Text(step.subtitle)
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+
+                Spacer(minLength: 12)
+
+                Button(step.buttonTitle) {
+                    onOpen()
+                }
+                .controlSize(.regular)
             }
 
-            Spacer(minLength: 12)
+            VStack(alignment: .leading, spacing: 8) {
+                ForEach(Array(step.instructions.enumerated()), id: \.offset) { index, instruction in
+                    HStack(alignment: .firstTextBaseline, spacing: 8) {
+                        Text("\(index + 1).")
+                            .font(.system(size: 13, weight: .semibold, design: .rounded))
+                            .foregroundStyle(.secondary)
+                            .frame(width: 20, alignment: .trailing)
 
-            Button(step.buttonTitle) {
-                onOpen()
+                        Text(instruction)
+                            .font(.system(size: 13, weight: .medium))
+                            .foregroundStyle(.primary)
+                            .fixedSize(horizontal: false, vertical: true)
+                    }
+                }
             }
-            .controlSize(.regular)
+            .padding(.leading, 40)
         }
         .padding(14)
         .background(

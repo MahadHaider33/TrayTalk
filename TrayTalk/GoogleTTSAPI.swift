@@ -1,6 +1,6 @@
 //
 //  api.swift
-//  TrayTalk
+//  Smooth Talker
 //
 //  Created by Sem Visscher on 24/12/2024.
 //
@@ -166,7 +166,7 @@ class GoogleTTSAPI {
     private var tokenExpirationDate: Date?
     private var isInitializing = false
     private var initializationCompletion: (() -> Void)?
-    private let audioTasksQueue = DispatchQueue(label: "com.traytalk.google-tts.audio-tasks")
+    private let audioTasksQueue = DispatchQueue(label: "com.kriyak.smoothtalker.google-tts.audio-tasks")
     private var audioTasksBySession: [UUID: [UUID: URLSessionDataTask]] = [:]
     private var cancelledAudioSessions: Set<UUID> = []
     
