@@ -112,6 +112,10 @@ class GoogleTTSAPI {
         shared?.cancelAudioRequests(excluding: activeSpeechID)
     }
     
+    static func resetSharedInstance() {
+        shared = nil
+    }
+    
     private init(credentialsJson: String) {
         self.credentials = credentialsJson
     }
