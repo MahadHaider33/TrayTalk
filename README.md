@@ -1,7 +1,7 @@
 # Install and setup
 
 - Build in XCode.
-- Copy Traytalk.app to ~/Applications
+- Copy Smooth Talker.app to ~/Applications
 
 # Permissions
 

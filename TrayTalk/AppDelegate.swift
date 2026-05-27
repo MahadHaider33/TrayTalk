@@ -12,28 +12,32 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     private var statusBarItem: NSStatusItem?
     private var window: NSWindow?
     private var settingsWindow: NSWindow?
+    private var speedSlider: NSSlider?
+    private var speedValueLabel: NSTextField?
     
     func applicationDidFinishLaunching(_ notification: Notification) {
         // register hotkey
         _ = HotkeyManager.shared
 
-        // Hide from the Dock
-        NSApp.setActivationPolicy(.accessory)
+        NSApp.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
         NSApp.activate(ignoringOtherApps: true)
         
         statusBarItem = NSStatusBar.system.statusItem(withLength: NSStatusItem.variableLength)
         if let button = statusBarItem?.button {
             button.target = self
-            button.image = NSImage(systemSymbolName: "speaker.wave.2.bubble.left", accessibilityDescription: "TrayTalk")
+            button.image = NSImage(systemSymbolName: "speaker.wave.2.bubble.left", accessibilityDescription: "Smooth Talker")
         }
         
         let menu = NSMenu()
+        menu.delegate = self
         
         let settingsMenuItem = NSMenuItem(title: "Settings", action: #selector(openSettings), keyEquivalent: "")
         let quitMenuItem = NSMenuItem(title: "Quit", action: #selector(quitApp), keyEquivalent: "")
         
         menu.addItem(settingsMenuItem)
+        menu.addItem(NSMenuItem.separator())
+        menu.addItem(createSpeedMenuItem())
         menu.addItem(NSMenuItem.separator())
         menu.addItem(quitMenuItem)
         
@@ -74,7 +78,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             defer: false
         )
         
-        settingsWindow.title = "TrayTalk"
+        settingsWindow.title = "Smooth Talker"
         settingsWindow.contentView = NSHostingView(rootView: contentView)
         
         settingsWindow.center()
@@ -91,12 +95,68 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         if loading {
             statusBarItem?.button?.image = NSImage(systemSymbolName: "arrow.triangle.2.circlepath.icloud", accessibilityDescription: "Loading")
         } else {
-            statusBarItem?.button?.image = NSImage(systemSymbolName: "speaker.wave.2.bubble.left", accessibilityDescription: "TrayTalk")
+            statusBarItem?.button?.image = NSImage(systemSymbolName: "speaker.wave.2.bubble.left", accessibilityDescription: "Smooth Talker")
         }
     }
     
     @objc func quitApp(_ sender: NSStatusBarButton) {
         NSApplication.shared.terminate(self)
     }
+
+    private func createSpeedMenuItem() -> NSMenuItem {
+        let container = NSView(frame: NSRect(x: 0, y: 0, width: 300, height: 40))
+
+        let titleLabel = NSTextField(labelWithString: "Speed")
+        titleLabel.font = .systemFont(ofSize: NSFont.systemFontSize)
+        titleLabel.alignment = .left
+
+        let slider = NSSlider(value: Preferences.shared.speakingSpeed, minValue: 0.25, maxValue: 4.0, target: self, action: #selector(speedSliderChanged(_:)))
+        slider.isContinuous = true
+        slider.controlSize = .small
+
+        let valueLabel = NSTextField(labelWithString: formatSpeed(slider.doubleValue))
+        valueLabel.font = .monospacedDigitSystemFont(ofSize: NSFont.smallSystemFontSize, weight: .regular)
+        valueLabel.alignment = .right
+        valueLabel.widthAnchor.constraint(equalToConstant: 48).isActive = true
+
+        let stackView = NSStackView(views: [titleLabel, slider, valueLabel])
+        stackView.orientation = .horizontal
+        stackView.alignment = .centerY
+        stackView.spacing = 8
+        stackView.translatesAutoresizingMaskIntoConstraints = false
+
+        container.addSubview(stackView)
+
+        NSLayoutConstraint.activate([
+            stackView.leadingAnchor.constraint(equalTo: container.leadingAnchor, constant: 16),
+            stackView.trailingAnchor.constraint(equalTo: container.trailingAnchor, constant: -24),
+            stackView.centerYAnchor.constraint(equalTo: container.centerYAnchor),
+            titleLabel.widthAnchor.constraint(equalToConstant: 42),
+            slider.widthAnchor.constraint(equalToConstant: 130)
+        ])
+
+        speedSlider = slider
+        speedValueLabel = valueLabel
+
+        let menuItem = NSMenuItem()
+        menuItem.view = container
+        return menuItem
+    }
+
+    @objc private func speedSliderChanged(_ sender: NSSlider) {
+        Preferences.shared.speakingSpeed = sender.doubleValue
+        speedValueLabel?.stringValue = formatSpeed(sender.doubleValue)
+    }
+
+    private func formatSpeed(_ speed: Double) -> String {
+        String(format: "%.2fx", speed)
+    }
 }
 
+extension AppDelegate: NSMenuDelegate {
+    func menuWillOpen(_ menu: NSMenu) {
+        let savedSpeed = Preferences.shared.speakingSpeed
+        speedSlider?.doubleValue = savedSpeed
+        speedValueLabel?.stringValue = formatSpeed(savedSpeed)
+    }
+}
