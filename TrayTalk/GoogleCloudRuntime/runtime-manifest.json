@@ -1,0 +1,14 @@
+{
+  "assets": [
+    {
+      "kind": "gcloud",
+      "fileName": "google-cloud-cli-darwin-arm.tar.gz",
+      "sha256": "1be6eee8b6d1d895c6fe4995a1ba55455f32c142187ab6308043365d9a033478"
+    },
+    {
+      "kind": "python",
+      "fileName": "cpython-3.10.20+20260510-aarch64-apple-darwin-install_only.tar.gz",
+      "sha256": "22f02aa2458efa28029f91800c3d85a270ae308a2d8450f3f6cef49f56abfa48"
+    }
+  ]
+}
