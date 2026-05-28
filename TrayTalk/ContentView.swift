@@ -708,7 +708,7 @@ private struct CredentialSetupStep: Identifiable {
 
 private struct CredentialsSetupSheet: View {
     @Environment(\.dismiss) private var dismiss
-    @StateObject private var automaticSetup = GoogleCloudRuntimeSetupModel()
+    @StateObject private var automaticSetup = GoogleCloudSetupModel()
     @State private var mode: CredentialSetupMode
     @State private var draftCredentials: String
     @State private var validationState: CredentialValidationState = .idle
@@ -1094,7 +1094,7 @@ private struct CredentialSetupModeButton: View {
 }
 
 private struct GoogleCloudAutomaticSetupPanel: View {
-    @ObservedObject var model: GoogleCloudRuntimeSetupModel
+    @ObservedObject var model: GoogleCloudSetupModel
     @State private var selectedBillingAccountID = ""
     @State private var selectedProjectID = ""
     @State private var isShowingTechnicalDetails = false
@@ -1102,7 +1102,7 @@ private struct GoogleCloudAutomaticSetupPanel: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 20) {
             VStack(alignment: .leading, spacing: 6) {
-                Text("Automatic Google Cloud Setup")
+                Text("Automatic Setup")
                     .font(.title2.bold())
 
                 Text("Let Smooth Talker sign into Google, configure Text-to-Speech, and create credentials automatically.")
@@ -1112,20 +1112,6 @@ private struct GoogleCloudAutomaticSetupPanel: View {
 
             statusPanel
             actionPanel
-
-            HStack(spacing: 10) {
-                Button("Reset Automatic Setup") {
-                    model.resetAutomaticSetup()
-                }
-                .controlSize(.regular)
-
-                if model.failureReason == .runtimeBroken {
-                    Button("Repair Automatic Setup") {
-                        model.repairRuntime()
-                    }
-                    .controlSize(.regular)
-                }
-            }
 
             if !model.technicalDetails.isEmpty {
                 technicalDetailsPanel
@@ -1180,8 +1166,6 @@ private struct GoogleCloudAutomaticSetupPanel: View {
     private var actionPanel: some View {
         switch model.stage {
         case .idle:
-            startButton
-        case .ready:
             startButton
         case .choosingProject:
             VStack(alignment: .leading, spacing: 12) {
@@ -1260,19 +1244,12 @@ private struct GoogleCloudAutomaticSetupPanel: View {
             }
         case .failed:
             switch model.failureReason {
-            case .runtimeBroken:
-                HStack(spacing: 10) {
-                    Button("Repair Automatic Setup") {
-                        model.repairRuntime()
-                    }
-                    .controlSize(.large)
-                    .buttonStyle(.borderedProminent)
-
-                    Button("Reset Automatic Setup") {
-                        model.resetAutomaticSetup()
-                    }
-                    .controlSize(.large)
+            case .missingConfig:
+                Button("Open Google OAuth Setup") {
+                    model.openOAuthSetup()
                 }
+                .controlSize(.large)
+                .buttonStyle(.borderedProminent)
             case .billing:
                 HStack(spacing: 10) {
                     Button("Open Google Billing") {
@@ -1339,14 +1316,10 @@ private struct GoogleCloudAutomaticSetupPanel: View {
         switch model.stage {
         case .idle:
             return "Ready to start"
-        case .validatingRuntime:
-            return "Preparing setup"
-        case .repairingRuntime:
-            return "Repairing setup"
-        case .ready:
-            return "Ready to start"
         case .signingIn:
             return "Signing into Google"
+        case .loadingProjects:
+            return "Loading projects"
         case .choosingProject:
             return "Choose project"
         case .creatingProject:
@@ -1366,13 +1339,16 @@ private struct GoogleCloudAutomaticSetupPanel: View {
         case .readyToValidate:
             return "Validating setup"
         case .failed:
+            if model.failureReason == .missingConfig {
+                return "Automatic Setup Not Configured"
+            }
             return "Setup needs attention"
         }
     }
 }
 
 private struct ProgressIcon: View {
-    let stage: GoogleCloudRuntimeStage
+    let stage: GoogleCloudSetupStage
 
     var body: some View {
         Image(systemName: symbolName)
@@ -1391,7 +1367,7 @@ private struct ProgressIcon: View {
             return "exclamationmark.triangle.fill"
         case .waitingForBilling:
             return "creditcard.fill"
-        case .ready, .readyToValidate:
+        case .readyToValidate:
             return "checkmark.circle.fill"
         case let stage where stage.isBusy:
             return "arrow.triangle.2.circlepath"
@@ -1404,7 +1380,7 @@ private struct ProgressIcon: View {
         switch stage {
         case .failed:
             return .red
-        case .ready, .readyToValidate:
+        case .readyToValidate:
             return .green
         case .waitingForBilling, .choosingBilling, .choosingProject:
             return .orange

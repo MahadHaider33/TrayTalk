@@ -9,17 +9,6 @@ Requires OSX Accessibility permission.
 
 Note: You may have to restart it after giving it permission.
 
-# Automatic Google Cloud setup runtime
-
-Automatic setup uses a private Smooth Talker runtime under `~/Library/Application Support/Smooth Talker/`. It must not use Homebrew, system Python, user shell files, or the user's normal Google Cloud CLI configuration.
-
-Release builds should include these pinned runtime archives in `TrayTalk/GoogleCloudRuntime/`:
-
-- `google-cloud-cli-darwin-arm.tar.gz`
-- `cpython-3.10.20+20260510-aarch64-apple-darwin-install_only.tar.gz`
-
-After adding or updating archives, update `TrayTalk/GoogleCloudRuntime/runtime-manifest.json` with the SHA256 for each archive. Smooth Talker verifies these checksums before expanding the runtime into Application Support.
-
 # Google Cloud Service account (json)
 
 ```
