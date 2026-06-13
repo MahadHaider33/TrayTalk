@@ -79,21 +79,21 @@ enum GoogleCredentialsValidationError: LocalizedError {
     var errorDescription: String? {
         switch self {
         case .empty:
-            return "Add the downloaded service account JSON before continuing."
+            return "Smooth Talker could not create credentials. Try Automatic Setup again."
         case .invalidEncoding:
-            return "The credentials file is not valid UTF-8 text."
+            return "Google Cloud returned credentials Smooth Talker could not read. Try Automatic Setup again."
         case .malformedJSON:
-            return "This does not look like valid JSON. Try importing the file downloaded from Google Cloud again."
+            return "Google Cloud returned credentials Smooth Talker could not read. Try Automatic Setup again."
         case .notObject:
-            return "The credentials file should be a JSON object."
+            return "Google Cloud returned credentials in an unexpected format. Try Automatic Setup again."
         case .missingField(let field):
-            return "The credentials JSON is missing '\(field)'. Download a new service account key from Google Cloud."
+            return "Google Cloud returned incomplete credentials. Try Automatic Setup again. Missing: \(field)."
         case .wrongType:
-            return "This is not a Google service account key. Choose a JSON key with type 'service_account'."
+            return "Google Cloud returned credentials in an unexpected format. Try Automatic Setup again."
         case .invalidPrivateKey:
-            return "The private key is missing or incomplete. Download a fresh JSON key from Google Cloud."
+            return "Google Cloud returned incomplete credentials. Try Automatic Setup again."
         case .invalidClientEmail:
-            return "The service account email looks wrong. Choose the JSON key downloaded from a Google Cloud service account."
+            return "Google Cloud returned credentials for the wrong account type. Try Automatic Setup again."
         case .invalidTokenURI:
             return "The token URI does not look like a Google authentication endpoint."
         }

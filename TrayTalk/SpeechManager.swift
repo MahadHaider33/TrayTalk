@@ -32,7 +32,13 @@ class SpeechManager {
         audioPlayer.stop()
         GoogleTTSAPI.cancelAudioRequests(except: speechID)
         
-        if Preferences.shared.voiceName.isEmpty {
+        let voiceName = Preferences.shared.voiceName
+        if voiceName.isEmpty {
+            DispatchQueue.main.async { self.appDelegate?.setTrayLoading(false) }
+            return
+        }
+        
+        if VoiceCategory(for: voiceName).requiresPremiumUnlock && !Preferences.shared.hasPremiumVoices {
             DispatchQueue.main.async { self.appDelegate?.setTrayLoading(false) }
             return
         }
@@ -73,12 +79,11 @@ class SpeechManager {
                         }
                     }
                     
-                    TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=chunk-\(nextChunkToPlay + 1) queued")
                     nextChunkToPlay += 1
                 }
             }
             
-            func markChunkFailed(_ index: Int, error: Error) {
+            func markChunkFailed(_ index: Int, error _: Error) {
                 if let existingFailedChunkIndex = failedChunkIndex {
                     failedChunkIndex = min(existingFailedChunkIndex, index)
                 } else {
@@ -87,10 +92,7 @@ class SpeechManager {
                 
                 let firstFailedChunkIndex = failedChunkIndex ?? index
                 audioByChunkIndex = audioByChunkIndex.filter { $0.key < firstFailedChunkIndex }
-                
-                TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=chunk-\(index + 1) failed cutoff=chunk-\(firstFailedChunkIndex + 1) error=\(error.localizedDescription)")
-                print("\(error.localizedDescription)")
-                
+
                 if index == 0 && !didStartPlayback {
                     DispatchQueue.main.async {
                         self.appDelegate?.setTrayLoading(false)
@@ -102,11 +104,10 @@ class SpeechManager {
             
             for (index, chunk) in chunks.enumerated() {
                 let chunkLabel = "chunk-\(index + 1)"
-                TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=\(chunkLabel) requested chars=\(chunk.count)")
                 
                 api.getAudio(text: chunk,
                              language: Preferences.shared.language,
-                             voiceName: Preferences.shared.voiceName,
+                             voiceName: voiceName,
                              speed: Preferences.shared.speakingSpeed,
                              speechID: speechID,
                              chunkLabel: chunkLabel
@@ -117,7 +118,6 @@ class SpeechManager {
                     case .success(let data):
                         if let failedChunkIndex = failedChunkIndex,
                            index >= failedChunkIndex {
-                            TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=\(chunkLabel) ignored after-failure")
                             return
                         }
                         
@@ -131,23 +131,6 @@ class SpeechManager {
         }
     }
 }
-
-enum TTSLogger {
-    private static func timestamp(for date: Date) -> String {
-        let formatter = DateFormatter()
-        formatter.dateFormat = "HH:mm:ss.SSS"
-        return formatter.string(from: date)
-    }
-    
-    static func log(_ message: String, date: Date = Date()) {
-        print("[TTS] \(timestamp(for: date)) \(message)")
-    }
-    
-    static func shortID(_ id: UUID) -> String {
-        String(id.uuidString.prefix(4))
-    }
-}
-
 
 private struct TextChunker {
     private static let chunkTargets = [125, 500, 800]
@@ -234,16 +217,12 @@ class AudioPlayer: ObservableObject {
             }
             
             startPlayback()
-
-            print("Playback started")
         } catch {
-            print("Failed to play audio: \(error)")
         }
     }
 
     func stop() {
         if let player = player {
-            print("Stopping playback")
             player.pause() // Pause playback
             player.removeAllItems()
         }
@@ -252,9 +231,7 @@ class AudioPlayer: ObservableObject {
         for tempURL in tempURLs {
             do {
                 try FileManager.default.removeItem(at: tempURL)
-                print("Temporary file removed")
             } catch {
-                print("Failed to remove temporary file: \(error)")
             }
         }
         tempURLs.removeAll()

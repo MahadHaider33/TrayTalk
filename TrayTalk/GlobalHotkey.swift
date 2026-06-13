@@ -36,10 +36,8 @@ class GlobalHotkey: NSObject {
         let accessEnabled = AXIsProcessTrustedWithOptions(options as CFDictionary)
 
         if accessEnabled {
-            print("Accessibility permissions granted")
             registerHotkey()
         } else {
-            print("Please enable accessibility permissions in System Preferences")
             DispatchQueue.main.async {
                 let alert = NSAlert()
                 alert.messageText = "Accessibility Permissions Required"
@@ -74,8 +72,6 @@ class GlobalHotkey: NSObject {
             let globalHotkey = Unmanaged<GlobalHotkey>.fromOpaque(refcon).takeUnretainedValue()
             
             if type == .tapDisabledByTimeout {
-                print("tap disabled due to timeout")
-
                 // restart it
                 HotkeyManager.shared.hotkey?.reEnableEventTap()
 
@@ -93,7 +89,6 @@ class GlobalHotkey: NSObject {
                     return nil // Suppress the event
                 } else if hotkey == eventString {
                     if type == .keyUp {
-                        print("hotkey key up")
                         return nil
                     }
                     Task {
@@ -106,15 +101,12 @@ class GlobalHotkey: NSObject {
         }, userInfo: UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque()))
 
         guard let eventTap = eventTap else {
-            print("Failed to create event tap")
             return
         }
 
         runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0)
         CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
         CGEvent.tapEnable(tap: eventTap, enable: true)
-
-        print("Event tap registered")
     }
     
     func unregisterHotkey() {
@@ -142,12 +134,8 @@ class GlobalHotkey: NSObject {
 
 
     private func handleHotkeyPressed() {
-        print("Hotkey pressed")
         if let selectedText = getSelectedText() {
-            print("Selected text: \(selectedText)")
             callback(selectedText)
-        } else {
-            print("No text selected")
         }
     }
 
@@ -213,9 +201,6 @@ class GlobalHotkey: NSObject {
         if let result = script?.executeAndReturnError(&error) {
             return result.stringValue
         } else {
-            if let error = error {
-                print("Error executing AppleScript: \(error)")
-            }
             return nil
         }
     }

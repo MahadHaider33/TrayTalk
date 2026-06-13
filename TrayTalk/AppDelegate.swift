@@ -59,7 +59,6 @@ class AppDelegate: NSObject, NSApplicationDelegate {
             NSApp.activate(ignoringOtherApps: true)
             window.makeKeyAndOrderFront(self)
         } else {
-            print("window is not available")
             // Create the settings window if it doesn't exist
             createSettingsWindow()
         }
