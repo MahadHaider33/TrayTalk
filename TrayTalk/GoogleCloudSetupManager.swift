@@ -572,7 +572,6 @@ private final class GoogleOAuthAuthenticator: NSObject, ASWebAuthenticationPrese
 
         let body = [
             "client_id": config.clientID,
-            "client_secret": config.clientSecret,
             "code": code,
             "code_verifier": verifier,
             "grant_type": "authorization_code",
@@ -839,21 +838,15 @@ private extension Result {
 
 private struct GoogleOAuthConfig {
     let clientID: String
-    let clientSecret: String
 
     static func load() throws -> GoogleOAuthConfig {
         let clientID = Bundle.main.object(forInfoDictionaryKey: "GoogleOAuthClientID") as? String ?? ""
-        let clientSecret = Bundle.main.object(forInfoDictionaryKey: "GoogleOAuthClientSecret") as? String ?? ""
 
         guard !isPlaceholder(clientID) else {
             throw GoogleCloudSetupError.missingOAuthConfig
         }
 
-        guard !isPlaceholder(clientSecret) else {
-            throw GoogleCloudSetupError.missingOAuthClientSecret
-        }
-
-        return GoogleOAuthConfig(clientID: clientID, clientSecret: clientSecret)
+        return GoogleOAuthConfig(clientID: clientID)
     }
 
     private static func isPlaceholder(_ value: String) -> Bool {
@@ -922,7 +915,6 @@ private struct GoogleCloudAPIError: Decodable {
 
 enum GoogleCloudSetupError: LocalizedError {
     case missingOAuthConfig
-    case missingOAuthClientSecret
     case authCanceled(String)
     case tokenMissing
     case projectMissing
@@ -952,9 +944,7 @@ enum GoogleCloudSetupError: LocalizedError {
 
         switch setupError {
         case .missingOAuthConfig:
-            return "Automatic Setup is unavailable in this version of Smooth Talker. Please update the app or contact support."
-        case .missingOAuthClientSecret:
-            return "Automatic Setup is unavailable in this version of Smooth Talker. Please update the app or contact support."
+            return "Connect is unavailable because the Google OAuth client ID is missing or invalid. Please update the app or contact support."
         case .authCanceled:
             return "Google sign-in was canceled. Try again when you are ready."
         case .tokenMissing:
@@ -972,10 +962,6 @@ enum GoogleCloudSetupError: LocalizedError {
 
     static func failureReason(for error: Error, message: String) -> GoogleCloudSetupFailureReason {
         if case .missingOAuthConfig = error as? GoogleCloudSetupError {
-            return .missingConfig
-        }
-
-        if case .missingOAuthClientSecret = error as? GoogleCloudSetupError {
             return .missingConfig
         }
 
@@ -1008,10 +994,6 @@ enum GoogleCloudSetupError: LocalizedError {
 
         if searchable.contains("billing") {
             return "Billing needs attention in Google Cloud. Open Google Billing, attach or activate a billing account, then continue."
-        }
-
-        if searchable.contains("client_secret") || searchable.contains("client secret") {
-            return "Automatic Setup is unavailable in this version of Smooth Talker. Please update the app or contact support."
         }
 
         if searchable.contains("permission") || searchable.contains("denied") {
