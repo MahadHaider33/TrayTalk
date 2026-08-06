@@ -4,9 +4,7 @@
 <dict>
 	<key>GoogleOAuthClientID</key>
 	<string>$(GOOGLE_OAUTH_CLIENT_ID)</string>
-	<key>com.apple.security.temporary-exception.apple-events</key>
-	<array>
-		<string>com.apple.systemevents</string>
-	</array>
+	<key>GoogleOAuthClientSecret</key>
+	<string>$(GOOGLE_OAUTH_CLIENT_SECRET)</string>
 </dict>
 </plist>

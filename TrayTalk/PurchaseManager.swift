@@ -7,11 +7,7 @@ final class PurchaseManager: ObservableObject {
     
     static let premiumVoicesProductID = "com.kriyak.smoothtalker.premiumvoices"
     
-    @Published private(set) var hasPremiumVoices = false {
-        didSet {
-            Preferences.shared.hasPremiumVoices = hasPremiumVoices
-        }
-    }
+    @Published private(set) var hasPremiumVoices = false
     @Published private(set) var premiumVoicesProduct: Product?
     @Published private(set) var isLoading = false
     @Published private(set) var statusMessage: String?
@@ -19,9 +15,7 @@ final class PurchaseManager: ObservableObject {
     private var transactionUpdatesTask: Task<Void, Never>?
     private var hasStarted = false
     
-    private init() {
-        Preferences.shared.hasPremiumVoices = false
-    }
+    private init() {}
     
     deinit {
         transactionUpdatesTask?.cancel()
@@ -44,7 +38,7 @@ final class PurchaseManager: ObservableObject {
         isLoading = true
         defer { isLoading = false }
         
-        await refreshEntitlements()
+        await refreshPremiumVoicesEntitlement()
         _ = try? await loadPremiumVoicesProduct()
     }
     
@@ -59,8 +53,13 @@ final class PurchaseManager: ObservableObject {
             switch result {
             case .success(let verificationResult):
                 let transaction = try checkVerified(verificationResult)
-                await refreshEntitlements()
+                guard transaction.productID == Self.premiumVoicesProductID else {
+                    throw PurchaseError.unexpectedProduct
+                }
+
+                hasPremiumVoices = true
                 await transaction.finish()
+                await refreshPremiumVoicesEntitlement()
                 statusMessage = hasPremiumVoices ? "Premium voices unlocked." : "Purchase completed, but access is still pending."
             case .userCancelled:
                 statusMessage = nil
@@ -80,7 +79,7 @@ final class PurchaseManager: ObservableObject {
         
         do {
             try await AppStore.sync()
-            await refreshEntitlements()
+            await refreshPremiumVoicesEntitlement()
             statusMessage = hasPremiumVoices ? "Purchases restored." : "No premium voice purchase was found."
         } catch {
             statusMessage = error.localizedDescription
@@ -97,8 +96,9 @@ final class PurchaseManager: ObservableObject {
             return
         }
         
-        await refreshEntitlements()
+        hasPremiumVoices = transaction.revocationDate == nil
         await transaction.finish()
+        await refreshPremiumVoicesEntitlement()
     }
     
     @discardableResult
@@ -120,7 +120,7 @@ final class PurchaseManager: ObservableObject {
         return try await loadPremiumVoicesProduct()
     }
     
-    private func refreshEntitlements() async {
+    private func refreshPremiumVoicesEntitlement() async {
         var isUnlocked = false
         
         for await result in Transaction.currentEntitlements {
@@ -150,6 +150,7 @@ final class PurchaseManager: ObservableObject {
 private enum PurchaseError: LocalizedError {
     case failedVerification
     case productUnavailable
+    case unexpectedProduct
     
     var errorDescription: String? {
         switch self {
@@ -157,6 +158,8 @@ private enum PurchaseError: LocalizedError {
             return "The App Store could not verify this purchase."
         case .productUnavailable:
             return "Premium voices are not available yet."
+        case .unexpectedProduct:
+            return "The App Store returned a purchase that Smooth Talker could not recognize."
         }
     }
 }

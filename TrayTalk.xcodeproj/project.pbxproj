@@ -6,6 +6,10 @@
 	objectVersion = 77;
 	objects = {
 
+/* Begin PBXBuildFile section */
+		A825CEF02D1AEF5B001139D1 /* OAuth2 in Frameworks */ = {isa = PBXBuildFile; productRef = A825CEEF2D1AEF5B001139D1 /* OAuth2 */; };
+/* End PBXBuildFile section */
+
 /* Begin PBXFileReference section */
 		A825CEBE2D1ABBF3001139D1 /* Smooth Talker.app */ = {isa = PBXFileReference; explicitFileType = wrapper.application; includeInIndex = 0; path = "Smooth Talker.app"; sourceTree = BUILT_PRODUCTS_DIR; };
 /* End PBXFileReference section */
@@ -23,6 +27,7 @@
 			isa = PBXFrameworksBuildPhase;
 			buildActionMask = 2147483647;
 			files = (
+				A825CEF02D1AEF5B001139D1 /* OAuth2 in Frameworks */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -72,6 +77,9 @@
 				A825CEC02D1ABBF3001139D1 /* TrayTalk */,
 			);
 			name = TrayTalk;
+			packageProductDependencies = (
+				A825CEEF2D1AEF5B001139D1 /* OAuth2 */,
+			);
 			productName = SmoothTalker;
 			productReference = A825CEBE2D1ABBF3001139D1 /* Smooth Talker.app */;
 			productType = "com.apple.product-type.application";
@@ -105,6 +113,9 @@
 			);
 			mainGroup = A825CEB52D1ABBF3001139D1;
 			minimizedProjectReferenceProxies = 1;
+			packageReferences = (
+				A825CEEE2D1AEF5B001139D1 /* XCRemoteSwiftPackageReference "google-auth-library-swift" */,
+			);
 			preferredProjectObjectVersion = 77;
 			productRefGroup = A825CEBF2D1ABBF3001139D1 /* Products */;
 			projectDirPath = "";
@@ -266,7 +277,7 @@
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 5;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "\"TrayTalk/Preview Content\"";
 				DEVELOPMENT_TEAM = H56WDVW4MF;
@@ -284,7 +295,8 @@
 				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
 				ENABLE_RESOURCE_ACCESS_USB = NO;
 				GENERATE_INFOPLIST_FILE = YES;
-				GOOGLE_OAUTH_CLIENT_ID = "YOUR_GOOGLE_OAUTH_CLIENT_ID";
+				GOOGLE_OAUTH_CLIENT_ID = "";
+				GOOGLE_OAUTH_CLIENT_SECRET = "";
 				INFOPLIST_FILE = "TrayTalk-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "Smooth Talker";
 				INFOPLIST_KEY_CFBundleName = "Smooth Talker";
@@ -314,7 +326,7 @@
 				"CODE_SIGN_IDENTITY[sdk=macosx*]" = "Apple Development";
 				CODE_SIGN_STYLE = Automatic;
 				COMBINE_HIDPI_IMAGES = YES;
-				CURRENT_PROJECT_VERSION = 1;
+				CURRENT_PROJECT_VERSION = 5;
 				DEAD_CODE_STRIPPING = YES;
 				DEVELOPMENT_ASSET_PATHS = "\"TrayTalk/Preview Content\"";
 				DEVELOPMENT_TEAM = H56WDVW4MF;
@@ -332,7 +344,8 @@
 				ENABLE_RESOURCE_ACCESS_PRINTING = NO;
 				ENABLE_RESOURCE_ACCESS_USB = NO;
 				GENERATE_INFOPLIST_FILE = YES;
-				GOOGLE_OAUTH_CLIENT_ID = "YOUR_GOOGLE_OAUTH_CLIENT_ID";
+				GOOGLE_OAUTH_CLIENT_ID = "";
+				GOOGLE_OAUTH_CLIENT_SECRET = "";
 				INFOPLIST_FILE = "TrayTalk-Info.plist";
 				INFOPLIST_KEY_CFBundleDisplayName = "Smooth Talker";
 				INFOPLIST_KEY_CFBundleName = "Smooth Talker";
@@ -375,6 +388,24 @@
 		};
 /* End XCConfigurationList section */
 
+/* Begin XCRemoteSwiftPackageReference section */
+		A825CEEE2D1AEF5B001139D1 /* XCRemoteSwiftPackageReference "google-auth-library-swift" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://github.com/googleapis/google-auth-library-swift";
+			requirement = {
+				kind = upToNextMajorVersion;
+				minimumVersion = 0.5.3;
+			};
+		};
+/* End XCRemoteSwiftPackageReference section */
+
+/* Begin XCSwiftPackageProductDependency section */
+		A825CEEF2D1AEF5B001139D1 /* OAuth2 */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = A825CEEE2D1AEF5B001139D1 /* XCRemoteSwiftPackageReference "google-auth-library-swift" */;
+			productName = OAuth2;
+		};
+/* End XCSwiftPackageProductDependency section */
 	};
 	rootObject = A825CEB62D1ABBF3001139D1 /* Project object */;
 }

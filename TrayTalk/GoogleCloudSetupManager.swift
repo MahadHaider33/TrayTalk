@@ -44,10 +44,8 @@ enum GoogleCloudSetupStage: Equatable {
     case idle
     case signingIn
     case loadingProjects
-    case choosingProject
     case creatingProject
     case checkingBilling
-    case choosingBilling
     case waitingForBilling
     case linkingBilling
     case enablingServices
@@ -76,12 +74,13 @@ enum GoogleCloudSetupFailureReason {
 
 @MainActor
 final class GoogleCloudSetupModel: ObservableObject {
+    private static let projectIDPrefix = "smooth-talker-tts"
+    private static let projectDisplayName = "Smooth Talker"
+
     @Published private(set) var stage: GoogleCloudSetupStage = .idle
-    @Published private(set) var statusMessage = "Smooth Talker can configure Google Cloud automatically."
+    @Published private(set) var statusMessage = "Smooth Talker can configure Google Cloud Text-to-Speech automatically."
     @Published private(set) var failureReason: GoogleCloudSetupFailureReason?
     @Published private(set) var projectID: String?
-    @Published private(set) var existingProjects: [GoogleCloudProject] = []
-    @Published private(set) var billingAccounts: [GoogleCloudBillingAccount] = []
     @Published private(set) var generatedCredentialsJSON: String?
 
     private let setupManager = GoogleCloudSetupManager()
@@ -96,66 +95,14 @@ final class GoogleCloudSetupModel: ObservableObject {
         run { [self] in
             do {
                 resetFailure()
+                await setStage(.signingIn, "Authorizing Google Cloud Text-to-Speech...")
                 accessToken = try await setupManager.signIn()
-                try await discoverProjects()
-            } catch {
-                await fail(error)
-            }
-        }
-    }
-
-    func createNewProjectAndContinue() {
-        run { [self] in
-            do {
-                resetFailure()
                 try await createProject()
                 try await discoverBillingAccounts()
             } catch {
                 await fail(error)
             }
         }
-    }
-
-    func useExistingProject(_ project: GoogleCloudProject) {
-        run { [self] in
-            do {
-                resetFailure()
-                projectID = project.projectId
-                try await discoverBillingAccounts()
-            } catch {
-                await fail(error)
-            }
-        }
-    }
-
-    func useBillingAccount(_ account: GoogleCloudBillingAccount) {
-        run { [self] in
-            do {
-                resetFailure()
-                try await linkBilling(account)
-                try await confirmProjectBillingIsActive()
-                try await finishProvisioning()
-            } catch {
-                await fail(error)
-            }
-        }
-    }
-
-    func retryBillingCheckAndContinue() {
-        run { [self] in
-            do {
-                resetFailure()
-                try await confirmProjectBillingIsActive()
-                try await finishProvisioning()
-            } catch {
-                await fail(error)
-            }
-        }
-    }
-
-    func openBillingConsole() {
-        guard let url = URL(string: "https://console.cloud.google.com/billing") else { return }
-        NSWorkspace.shared.open(url)
     }
 
     func openProjectBillingConsole() {
@@ -174,20 +121,22 @@ final class GoogleCloudSetupModel: ObservableObject {
         }
     }
 
-    private func discoverProjects() async throws {
-        guard let accessToken else { throw GoogleCloudSetupError.tokenMissing }
-
-        await setStage(.loadingProjects, "Looking for Google Cloud projects...")
-        existingProjects = try await setupManager.listProjects(accessToken: accessToken)
-        await setStage(.choosingProject, "Choose an existing project or create a new Smooth Talker project.")
-    }
-
     private func createProject() async throws {
         guard let accessToken else { throw GoogleCloudSetupError.tokenMissing }
 
         await setStage(.creatingProject, "Creating a Google Cloud project...")
-        let createdProjectID = try await setupManager.createProject(accessToken: accessToken)
+        let createdProjectID = try await setupManager.createProject(
+            accessToken: accessToken,
+            projectID: Self.makeProjectID(),
+            displayName: Self.projectDisplayName
+        )
         projectID = createdProjectID
+        Preferences.shared.googleCloudProjectID = createdProjectID
+    }
+
+    private static func makeProjectID() -> String {
+        let suffix = UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(8).lowercased()
+        return "\(projectIDPrefix)-\(suffix)"
     }
 
     private func discoverBillingAccounts() async throws {
@@ -203,15 +152,17 @@ final class GoogleCloudSetupModel: ObservableObject {
 
         let accounts = try await setupManager.listBillingAccounts(accessToken: accessToken)
             .filter { $0.open != false }
-        billingAccounts = accounts
 
         if accounts.isEmpty {
-            await setStage(.waitingForBilling, "Link billing to this project in Google Cloud, then retry the billing check.")
+            await setStage(.waitingForBilling, "Link billing in Google Cloud, then click Connect again.")
             openProjectBillingConsole()
             return
         }
 
-        await setStage(.choosingBilling, "Choose the billing account to link to this project.")
+        let account = accounts[0]
+        try await linkBilling(account)
+        try await confirmProjectBillingIsActive()
+        try await finishProvisioning()
     }
 
     private func linkBilling(_ account: GoogleCloudBillingAccount) async throws {
@@ -304,9 +255,7 @@ final class GoogleCloudSetupManager {
         return response.projects ?? []
     }
 
-    func createProject(accessToken: String) async throws -> String {
-        let suffix = UUID().uuidString.replacingOccurrences(of: "-", with: "").prefix(8).lowercased()
-        let projectID = "smooth-talker-tts-\(suffix)"
+    func createProject(accessToken: String, projectID: String, displayName: String) async throws -> String {
         let url = URL(string: "https://cloudresourcemanager.googleapis.com/v1/projects")!
         let operation: GoogleCloudOperation = try await send(
             url: url,
@@ -314,7 +263,7 @@ final class GoogleCloudSetupManager {
             accessToken: accessToken,
             body: [
                 "projectId": projectID,
-                "name": "Smooth Talker"
+                "name": displayName
             ]
         )
         try await waitForOperation(
@@ -422,7 +371,7 @@ final class GoogleCloudSetupManager {
         guard let encodedKey = response.privateKeyData,
               let data = Data(base64Encoded: encodedKey),
               let json = String(data: data, encoding: .utf8) else {
-            throw GoogleCloudSetupError.invalidResponse("Google Cloud did not return Smooth Talker credentials. Try Automatic Setup again.")
+            throw GoogleCloudSetupError.invalidResponse("Google Cloud did not return Smooth Talker credentials. Click Connect again.")
         }
 
         return json
@@ -524,7 +473,7 @@ private final class GoogleOAuthAuthenticator: NSObject, ASWebAuthenticationPrese
         self.session = session
 
         guard session.start() else {
-            throw GoogleCloudSetupError.authCanceled("Smooth Talker could not open Google sign-in.")
+            throw GoogleCloudSetupError.authCanceled("Smooth Talker could not open Google Cloud authorization.")
         }
 
         defer {
@@ -560,7 +509,7 @@ private final class GoogleOAuthAuthenticator: NSObject, ASWebAuthenticationPrese
         ]
 
         guard let url = components.url else {
-            throw GoogleCloudSetupError.invalidResponse("Smooth Talker could not create the Google sign-in URL.")
+            throw GoogleCloudSetupError.invalidResponse("Smooth Talker could not create the Google Cloud authorization URL.")
         }
         return url
     }
@@ -572,6 +521,7 @@ private final class GoogleOAuthAuthenticator: NSObject, ASWebAuthenticationPrese
 
         let body = [
             "client_id": config.clientID,
+            "client_secret": config.clientSecret,
             "code": code,
             "code_verifier": verifier,
             "grant_type": "authorization_code",
@@ -702,7 +652,7 @@ private final class GoogleOAuthLoopbackServer: @unchecked Sendable {
                 }
             }
         } onCancel: {
-            self.cancel(message: "Google sign-in was canceled.")
+            self.cancel(message: "Google Cloud authorization was canceled.")
         }
     }
 
@@ -718,7 +668,7 @@ private final class GoogleOAuthLoopbackServer: @unchecked Sendable {
     private func acceptOneRequest() {
         let clientFileDescriptor = Darwin.accept(socketFileDescriptor, nil, nil)
         guard clientFileDescriptor >= 0 else {
-            finish(.failure(GoogleCloudSetupError.authCanceled("Google sign-in was canceled.")))
+            finish(.failure(GoogleCloudSetupError.authCanceled("Google Cloud authorization was canceled.")))
             return
         }
 
@@ -751,17 +701,17 @@ private final class GoogleOAuthLoopbackServer: @unchecked Sendable {
 
     private func authorizationCode(from request: String) -> Result<String, Error> {
         guard let firstLine = request.components(separatedBy: "\r\n").first else {
-            return .failure(GoogleCloudSetupError.authCanceled("Google sign-in did not return a valid callback."))
+            return .failure(GoogleCloudSetupError.authCanceled("Google Cloud authorization did not return a valid callback."))
         }
 
         let parts = firstLine.split(separator: " ")
         guard parts.count >= 2 else {
-            return .failure(GoogleCloudSetupError.authCanceled("Google sign-in did not return a valid callback."))
+            return .failure(GoogleCloudSetupError.authCanceled("Google Cloud authorization did not return a valid callback."))
         }
 
         let path = String(parts[1])
         guard let components = URLComponents(string: "http://127.0.0.1:\(port)\(path)") else {
-            return .failure(GoogleCloudSetupError.authCanceled("Google sign-in did not return a valid callback."))
+            return .failure(GoogleCloudSetupError.authCanceled("Google Cloud authorization did not return a valid callback."))
         }
 
         if let error = components.queryItems?.first(where: { $0.name == "error" })?.value {
@@ -779,7 +729,7 @@ private final class GoogleOAuthLoopbackServer: @unchecked Sendable {
     }
 
     private func writeHTTPResponse(to fileDescriptor: Int32, success: Bool) {
-        let title = success ? "Smooth Talker is connected to Google" : "Smooth Talker could not finish Google sign-in"
+        let title = success ? "Smooth Talker is connected to Google Cloud" : "Smooth Talker could not finish Google Cloud authorization"
         let body = """
         <!doctype html>
         <html>
@@ -838,15 +788,17 @@ private extension Result {
 
 private struct GoogleOAuthConfig {
     let clientID: String
+    let clientSecret: String
 
     static func load() throws -> GoogleOAuthConfig {
         let clientID = Bundle.main.object(forInfoDictionaryKey: "GoogleOAuthClientID") as? String ?? ""
+        let clientSecret = Bundle.main.object(forInfoDictionaryKey: "GoogleOAuthClientSecret") as? String ?? ""
 
-        guard !isPlaceholder(clientID) else {
+        guard !isPlaceholder(clientID), !isPlaceholder(clientSecret) else {
             throw GoogleCloudSetupError.missingOAuthConfig
         }
 
-        return GoogleOAuthConfig(clientID: clientID)
+        return GoogleOAuthConfig(clientID: clientID, clientSecret: clientSecret)
     }
 
     private static func isPlaceholder(_ value: String) -> Bool {
@@ -946,11 +898,11 @@ enum GoogleCloudSetupError: LocalizedError {
         case .missingOAuthConfig:
             return "Connect is unavailable because the Google OAuth client ID is missing or invalid. Please update the app or contact support."
         case .authCanceled:
-            return "Google sign-in was canceled. Try again when you are ready."
+            return "Google Cloud authorization was canceled. Try again when you are ready."
         case .tokenMissing:
-            return "Smooth Talker needs you to sign in with Google again."
+            return "Smooth Talker needs you to authorize Google Cloud again."
         case .projectMissing:
-            return "Choose or create a Google Cloud project before continuing."
+            return "Smooth Talker could not find or create a Google Cloud project. Try Connect again."
         case .billingNotLinked:
             return "Billing is not linked to this project yet. Link billing manually in Google Cloud, then retry the billing check."
         case .api(_, let message):
@@ -997,13 +949,13 @@ enum GoogleCloudSetupError: LocalizedError {
         }
 
         if searchable.contains("permission") || searchable.contains("denied") {
-            return "Google Cloud says this account does not have permission to complete setup. Try another Google account or choose a project where you can manage billing and Text-to-Speech."
+            return "Google Cloud says this account does not have permission to complete setup. Try another Google account that can manage billing and Text-to-Speech."
         }
 
         if searchable.contains("service account key") ||
             searchable.contains("key creation") ||
             searchable.contains("iam.disableServiceAccountKeyCreation".lowercased()) {
-            return "This Google Cloud organization blocks service account key creation. Try another project or Google account that allows Smooth Talker to create credentials."
+            return "This Google Cloud organization blocks service account key creation. Try another Google account that allows Smooth Talker to create credentials."
         }
 
         if searchable.contains("serviceusage") || searchable.contains("api") || searchable.contains("disabled") {

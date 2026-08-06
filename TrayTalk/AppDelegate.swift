@@ -18,6 +18,9 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func applicationDidFinishLaunching(_ notification: Notification) {
         // register hotkey
         _ = HotkeyManager.shared
+        Task {
+            await PurchaseManager.shared.start()
+        }
 
         NSApp.setActivationPolicy(.regular)
         NSApplication.shared.activate(ignoringOtherApps: true)
@@ -67,8 +70,8 @@ class AppDelegate: NSObject, NSApplicationDelegate {
     func createSettingsWindow() {
         let contentView = ContentView()
         
-        let windowWidth: CGFloat = 880
-        let windowHeight: CGFloat = 700
+        let windowWidth: CGFloat = 1040
+        let windowHeight: CGFloat = 680
         
         let settingsWindow = NSWindow(
             contentRect: NSRect(x: 0, y: 0, width: windowWidth, height: windowHeight),
@@ -78,7 +81,7 @@ class AppDelegate: NSObject, NSApplicationDelegate {
         )
         
         settingsWindow.title = "Smooth Talker"
-        settingsWindow.minSize = NSSize(width: 720, height: 590)
+        settingsWindow.minSize = NSSize(width: 900, height: 620)
         settingsWindow.contentView = NSHostingView(rootView: contentView)
         
         settingsWindow.center()

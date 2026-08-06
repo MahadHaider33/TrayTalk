@@ -6,7 +6,7 @@
 //
 
 import Foundation
-import Security
+import OAuth2
 
 struct TTSVoice: Hashable, Codable {
     let name: String
@@ -151,223 +151,6 @@ enum GoogleTTSError: LocalizedError {
     }
 }
 
-private struct GoogleServiceAccountTokenCredentials: Decodable {
-    let clientEmail: String
-    let privateKey: String
-    let tokenURI: String
-
-    enum CodingKeys: String, CodingKey {
-        case clientEmail = "client_email"
-        case privateKey = "private_key"
-        case tokenURI = "token_uri"
-    }
-}
-
-private struct GoogleServiceAccountTokenResponse: Decodable {
-    let accessToken: String
-    let expiresIn: Int?
-
-    enum CodingKeys: String, CodingKey {
-        case accessToken = "access_token"
-        case expiresIn = "expires_in"
-    }
-}
-
-private final class GoogleServiceAccountTokenProvider {
-    private let credentials: GoogleServiceAccountTokenCredentials
-    private let scopes: [String]
-
-    init(credentialsData: Data, scopes: [String]) throws {
-        self.credentials = try JSONDecoder().decode(GoogleServiceAccountTokenCredentials.self, from: credentialsData)
-        self.scopes = scopes
-    }
-
-    func fetchToken(completion: @escaping (Result<GoogleServiceAccountTokenResponse, Error>) -> Void) {
-        do {
-            let assertion = try makeJWTAssertion()
-            guard let tokenURL = URL(string: credentials.tokenURI) else {
-                completion(.failure(GoogleTTSError.invalidCredentials))
-                return
-            }
-
-            var request = URLRequest(url: tokenURL)
-            request.httpMethod = "POST"
-            request.setValue("application/x-www-form-urlencoded", forHTTPHeaderField: "Content-Type")
-
-            var body = URLComponents()
-            body.queryItems = [
-                URLQueryItem(name: "grant_type", value: "urn:ietf:params:oauth:grant-type:jwt-bearer"),
-                URLQueryItem(name: "assertion", value: assertion)
-            ]
-            request.httpBody = body.percentEncodedQuery?.data(using: .utf8)
-
-            URLSession.shared.dataTask(with: request) { data, response, error in
-                if let error {
-                    completion(.failure(error))
-                    return
-                }
-
-                guard let httpResponse = response as? HTTPURLResponse else {
-                    completion(.failure(GoogleTTSError.invalidResponse))
-                    return
-                }
-
-                guard (200...299).contains(httpResponse.statusCode) else {
-                    let body = data.flatMap { String(data: $0, encoding: .utf8) }
-                    completion(.failure(GoogleTTSError.httpError(httpResponse.statusCode, body)))
-                    return
-                }
-
-                guard let data else {
-                    completion(.failure(GoogleTTSError.noData))
-                    return
-                }
-
-                do {
-                    completion(.success(try JSONDecoder().decode(GoogleServiceAccountTokenResponse.self, from: data)))
-                } catch {
-                    completion(.failure(error))
-                }
-            }.resume()
-        } catch {
-            completion(.failure(error))
-        }
-    }
-
-    private func makeJWTAssertion() throws -> String {
-        let now = Int(Date().timeIntervalSince1970)
-        let header: [String: Any] = [
-            "alg": "RS256",
-            "typ": "JWT"
-        ]
-        let claims: [String: Any] = [
-            "iss": credentials.clientEmail,
-            "scope": scopes.joined(separator: " "),
-            "aud": credentials.tokenURI,
-            "iat": now,
-            "exp": now + 3600
-        ]
-
-        let signingInput = try [
-            JSONSerialization.data(withJSONObject: header, options: [.sortedKeys]).base64URLEncodedString(),
-            JSONSerialization.data(withJSONObject: claims, options: [.sortedKeys]).base64URLEncodedString()
-        ].joined(separator: ".")
-
-        let signature = try sign(Data(signingInput.utf8))
-        return "\(signingInput).\(signature.base64URLEncodedString())"
-    }
-
-    private func sign(_ data: Data) throws -> Data {
-        let privateKeyData = try Self.privateRSAKeyData(fromPEM: credentials.privateKey)
-        let attributes: [CFString: Any] = [
-            kSecAttrKeyType: kSecAttrKeyTypeRSA,
-            kSecAttrKeyClass: kSecAttrKeyClassPrivate
-        ]
-
-        var keyError: Unmanaged<CFError>?
-        guard let privateKey = SecKeyCreateWithData(privateKeyData as CFData, attributes as CFDictionary, &keyError) else {
-            throw keyError?.takeRetainedValue() ?? GoogleTTSError.invalidCredentials
-        }
-
-        var signingError: Unmanaged<CFError>?
-        guard let signature = SecKeyCreateSignature(
-            privateKey,
-            .rsaSignatureMessagePKCS1v15SHA256,
-            data as CFData,
-            &signingError
-        ) else {
-            throw signingError?.takeRetainedValue() ?? GoogleTTSError.authenticationFailed("Failed to sign Google service account token")
-        }
-
-        return signature as Data
-    }
-
-    private static func privateRSAKeyData(fromPEM pem: String) throws -> Data {
-        if pem.contains("-----BEGIN RSA PRIVATE KEY-----") {
-            return try base64DecodedPEMBody(
-                pem,
-                beginMarker: "-----BEGIN RSA PRIVATE KEY-----",
-                endMarker: "-----END RSA PRIVATE KEY-----"
-            )
-        }
-
-        let pkcs8Data = try base64DecodedPEMBody(
-            pem,
-            beginMarker: "-----BEGIN PRIVATE KEY-----",
-            endMarker: "-----END PRIVATE KEY-----"
-        )
-        return try extractRSAPrivateKey(fromPKCS8Data: pkcs8Data)
-    }
-
-    private static func base64DecodedPEMBody(_ pem: String, beginMarker: String, endMarker: String) throws -> Data {
-        let body = pem
-            .replacingOccurrences(of: beginMarker, with: "")
-            .replacingOccurrences(of: endMarker, with: "")
-            .components(separatedBy: .whitespacesAndNewlines)
-            .joined()
-
-        guard let data = Data(base64Encoded: body) else {
-            throw GoogleTTSError.invalidCredentials
-        }
-        return data
-    }
-
-    private static func extractRSAPrivateKey(fromPKCS8Data data: Data) throws -> Data {
-        var index = 0
-        let sequence = try readASN1Element(from: data, index: &index)
-        guard sequence.tag == 0x30 else { throw GoogleTTSError.invalidCredentials }
-
-        var sequenceIndex = 0
-        _ = try readASN1Element(from: sequence.value, index: &sequenceIndex)
-        _ = try readASN1Element(from: sequence.value, index: &sequenceIndex)
-        let privateKey = try readASN1Element(from: sequence.value, index: &sequenceIndex)
-        guard privateKey.tag == 0x04 else { throw GoogleTTSError.invalidCredentials }
-        return privateKey.value
-    }
-
-    private static func readASN1Element(from data: Data, index: inout Int) throws -> (tag: UInt8, value: Data) {
-        guard index < data.count else { throw GoogleTTSError.invalidCredentials }
-        let tag = data[index]
-        index += 1
-
-        guard index < data.count else { throw GoogleTTSError.invalidCredentials }
-        let firstLengthByte = data[index]
-        index += 1
-
-        let length: Int
-        if firstLengthByte & 0x80 == 0 {
-            length = Int(firstLengthByte)
-        } else {
-            let lengthByteCount = Int(firstLengthByte & 0x7f)
-            guard lengthByteCount > 0,
-                  lengthByteCount <= 4,
-                  index + lengthByteCount <= data.count else {
-                throw GoogleTTSError.invalidCredentials
-            }
-
-            var parsedLength = 0
-            for _ in 0..<lengthByteCount {
-                parsedLength = (parsedLength << 8) | Int(data[index])
-                index += 1
-            }
-            length = parsedLength
-        }
-
-        guard index + length <= data.count else { throw GoogleTTSError.invalidCredentials }
-        let value = data.subdata(in: index..<(index + length))
-        index += length
-        return (tag, value)
-    }
-}
-
-private extension Data {
-    func base64URLEncodedString() -> String {
-        base64EncodedString()
-            .replacingOccurrences(of: "+", with: "-")
-            .replacingOccurrences(of: "/", with: "_")
-            .replacingOccurrences(of: "=", with: "")
-    }
-}
 
 class GoogleTTSAPI {
     // Singleton instance
@@ -470,35 +253,37 @@ class GoogleTTSAPI {
             return
         }
         
-        let authentication: GoogleServiceAccountTokenProvider
-        do {
-            authentication = try GoogleServiceAccountTokenProvider(
-                credentialsData: credentialsData,
-                scopes: [scope]
-            )
-        } catch {
+        guard let authentication = ServiceAccountTokenProvider(
+            credentialsData: credentialsData,
+            scopes: [scope]
+        ) else {
             completion(.failure(GoogleTTSError.authenticationFailed("Failed to create token provider")))
             return
         }
-
-        authentication.fetchToken { [weak self] result in
-            switch result {
-            case .success(let token):
-                let accessToken = token.accessToken
-                guard !accessToken.isEmpty else {
+        
+        do {
+            try authentication.withToken { [weak self] token, error in
+                if let error = error {
+                    completion(.failure(GoogleTTSError.authenticationFailed(error.localizedDescription)))
+                    return
+                }
+                
+                guard let token = token,
+                      let accessToken = token.AccessToken else {
                     completion(.failure(GoogleTTSError.noToken))
                     return
                 }
-
+                
+                // Cache the new token and its expiration date
                 self?._cachedToken = accessToken
-                if let expiresIn = token.expiresIn {
+                if let expiresIn = token.ExpiresIn {
                     self?.tokenExpirationDate = Date().addingTimeInterval(TimeInterval(expiresIn))
                 }
-
+                
                 completion(.success(accessToken))
-            case .failure(let error):
-                completion(.failure(GoogleTTSError.authenticationFailed(error.localizedDescription)))
             }
+        } catch {
+            completion(.failure(GoogleTTSError.authenticationFailed(error.localizedDescription)))
         }
     }
     

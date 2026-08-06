@@ -89,7 +89,7 @@ class Preferences {
         static let speakingSpeed = "speakingSpeed"
         static let hotkey = "hotkey"
         static let secondLaunch = "secondLaunch"
-        static let hasPremiumVoices = "hasPremiumVoices"
+        static let googleCloudProjectID = "googleCloudProjectID"
     }
     
     var credentials: String {
@@ -129,6 +129,23 @@ class Preferences {
             }
         }
     }
+
+    var googleCloudProjectID: String? {
+        get {
+            let projectID = defaults.string(forKey: Keys.googleCloudProjectID)?
+                .trimmingCharacters(in: .whitespacesAndNewlines)
+            return projectID?.isEmpty == false ? projectID : nil
+        }
+        set {
+            let projectID = newValue?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+
+            if projectID.isEmpty {
+                defaults.removeObject(forKey: Keys.googleCloudProjectID)
+            } else {
+                defaults.set(projectID, forKey: Keys.googleCloudProjectID)
+            }
+        }
+    }
     
     var inputText: String {
         get { defaults.string(forKey: Keys.inputText) ?? "Have a nice day!" }
@@ -151,18 +168,19 @@ class Preferences {
     }
 
     var hotkey: String {
-        get { defaults.string(forKey: Keys.hotkey) ?? "option + `" }
-        set { defaults.set(newValue, forKey: Keys.hotkey) }
+        get {
+            let canonicalHotkey = HotkeyFormatter.canonicalize(defaults.string(forKey: Keys.hotkey))
+            defaults.set(canonicalHotkey, forKey: Keys.hotkey)
+            return canonicalHotkey
+        }
+        set {
+            defaults.set(HotkeyFormatter.canonicalize(newValue), forKey: Keys.hotkey)
+        }
     }
     
     var secondLaunch: Bool {
         get { defaults.bool(forKey: Keys.secondLaunch) }
         set { defaults.set(newValue, forKey: Keys.secondLaunch) }
-    }
-    
-    var hasPremiumVoices: Bool {
-        get { defaults.bool(forKey: Keys.hasPremiumVoices) }
-        set { defaults.set(newValue, forKey: Keys.hasPremiumVoices) }
     }
     
     private init() {

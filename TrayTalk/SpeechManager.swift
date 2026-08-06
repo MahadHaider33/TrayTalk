@@ -21,6 +21,13 @@ class SpeechManager {
     private init() {}
     
     func speak(_ text: String) {
+        Task { @MainActor in
+            self.speakFromMainActor(text)
+        }
+    }
+
+    @MainActor
+    private func speakFromMainActor(_ text: String) {
         let speechID = UUID()
         activeSpeechID = speechID
         let chunks = TextChunker.chunks(text)
@@ -38,7 +45,7 @@ class SpeechManager {
             return
         }
         
-        if VoiceCategory(for: voiceName).requiresPremiumUnlock && !Preferences.shared.hasPremiumVoices {
+        if VoiceCategory(for: voiceName).requiresPremiumUnlock && !PurchaseManager.shared.hasPremiumVoices {
             DispatchQueue.main.async { self.appDelegate?.setTrayLoading(false) }
             return
         }

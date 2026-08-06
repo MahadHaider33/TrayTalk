@@ -6,10 +6,12 @@
 //
 
 import AppKit
+import AVKit
 import SwiftUI
 
 struct ContentView: View {
     @StateObject private var purchaseManager = PurchaseManager.shared
+    @StateObject private var hotkeyManager = HotkeyManager.shared
     @State private var credentials = Preferences.shared.credentials
     @AppStorage("inputText") private var inputText = "Have a nice day!"
     @State private var result: String = ""
@@ -21,13 +23,15 @@ struct ContentView: View {
     @State private var availableVoices: [TTSVoice] = []
     @State private var selectedLanguage: String = "en-US"
     @State private var availableLanguages: [String] = []
-    @AppStorage("hotkey") private var hotkey = "option + `"
+    @AppStorage("hotkey") private var hotkey = HotkeyFormatter.defaultHotkey
     @State private var editingHotkey = false
     @State var loadVoicesTask: Task<Void, Never>?
     @State private var isCredentialsSheetPresented = false
     @State private var isUnlockSheetPresented = false
+    @State private var isRemoveGoogleCloudConfirmationPresented = false
     @State private var pendingLockedVoice: TTSVoice?
     @State private var deferredPremiumVoiceName: String?
+    @State private var onboardingStep: MandatoryOnboardingStep = .accessibility
 
     private let inputLimit = 5000
 
@@ -51,6 +55,34 @@ struct ContentView: View {
     private var canSpeak: Bool {
         let selectedVoiceCanPlay = selectedVoice.map { !isVoiceLocked($0) } ?? false
         return !credentials.isEmpty && !inputText.isEmpty && !isLoading && !isInitializing && selectedVoiceCanPlay
+    }
+
+    private var hasGoogleCloudCredentials: Bool {
+        !credentials.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+    }
+
+    private var googleCloudNeedsOnboarding: Bool {
+        !hasGoogleCloudCredentials || hasError
+    }
+
+    private var mandatoryOnboardingStep: MandatoryOnboardingStep? {
+        if !hotkeyManager.canCaptureHotkey {
+            return .accessibility
+        }
+
+        if onboardingStep == .accessibilitySuccess {
+            return .accessibilitySuccess
+        }
+
+        if onboardingStep == .googleCloudSuccess && !googleCloudNeedsOnboarding {
+            return .googleCloudSuccess
+        }
+
+        if googleCloudNeedsOnboarding {
+            return .googleCloud
+        }
+
+        return nil
     }
 
     private var hasError: Bool {
@@ -82,7 +114,7 @@ struct ContentView: View {
         if credentials.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             return ReadyStatus(
                 title: "Not configured",
-                message: "Add Google Cloud credentials to start using Smooth Talker.",
+                message: "Connect Google Cloud Text-to-Speech to start using Smooth Talker.",
                 symbolName: "exclamationmark.circle.fill",
                 color: .orange
             )
@@ -91,7 +123,7 @@ struct ContentView: View {
         if isInitializing {
             return ReadyStatus(
                 title: "Loading voices",
-                message: "Smooth Talker is checking your Google Cloud credentials.",
+                message: "Smooth Talker is checking your Google Cloud Text-to-Speech credentials.",
                 symbolName: "arrow.triangle.2.circlepath",
                 color: .orange
             )
@@ -115,15 +147,144 @@ struct ContentView: View {
             )
         }
 
+        if !hotkeyManager.isAccessibilityTrusted {
+            return ReadyStatus(
+                title: "Needs Accessibility",
+                message: hotkeyManager.accessibilityStatusMessage,
+                symbolName: "keyboard.badge.ellipsis",
+                color: .orange
+            )
+        }
+
+        if !hotkeyManager.isHotkeyRegistered {
+            return ReadyStatus(
+                title: "Shortcut unavailable",
+                message: hotkeyManager.accessibilityStatusMessage,
+                symbolName: "keyboard.badge.exclamationmark",
+                color: .red
+            )
+        }
+
         return ReadyStatus(
             title: "Ready",
-            message: "Select any text and press \(hotkey) to hear it.",
+            message: "Select text in any app and press \(hotkey) to hear it read aloud.",
             symbolName: "checkmark.circle.fill",
             color: .green
         )
     }
 
     var body: some View {
+        rootContent
+            .background(Color(nsColor: .windowBackgroundColor))
+            .frame(minWidth: 900, minHeight: 620)
+            .sheet(isPresented: $isCredentialsSheetPresented) {
+                CredentialsSetupSheet { newCredentials, voices in
+                    saveValidatedCredentials(newCredentials, voices: voices)
+                }
+            }
+            .sheet(isPresented: $isUnlockSheetPresented) {
+                PremiumVoicesUnlockSheet(
+                    purchaseManager: purchaseManager,
+                    lockedVoice: pendingLockedVoice
+                ) {
+                    selectPendingLockedVoiceIfUnlocked()
+                }
+            }
+            .alert("Remove Google Cloud setup?", isPresented: $isRemoveGoogleCloudConfirmationPresented) {
+                Button("Cancel", role: .cancel) {}
+
+                Button("Remove", role: .destructive) {
+                    clearCredentials()
+                }
+            } message: {
+                Text("You'll need to connect Google Cloud Text-to-Speech again before using Smooth Talker.")
+            }
+            .onAppear {
+                normalizeStoredHotkey()
+
+                if inputText.count > inputLimit {
+                    inputText = String(inputText.prefix(inputLimit))
+                }
+
+                if !credentials.isEmpty && availableVoices.isEmpty {
+                    startLoadVoicesTask(resetAPI: false)
+                }
+
+                if !hotkeyManager.canCaptureHotkey {
+                    onboardingStep = .accessibility
+                } else if googleCloudNeedsOnboarding {
+                    onboardingStep = .googleCloud
+                }
+            }
+            .task {
+                await purchaseManager.start()
+            }
+            .onChange(of: inputText) { _, newValue in
+                guard newValue.count > inputLimit else { return }
+                inputText = String(newValue.prefix(inputLimit))
+            }
+            .onChange(of: credentials) { _, newValue in
+                if !newValue.isEmpty {
+                    startLoadVoicesTask(resetAPI: true)
+                } else {
+                    GoogleTTSAPI.resetSharedInstance()
+                    api = nil
+                    availableVoices = []
+                    availableLanguages = []
+                    selectedVoice = nil
+                    result = ""
+                    onboardingStep = .googleCloud
+                }
+            }
+            .onChange(of: selectedVoice) { oldValue, newValue in
+                if let voice = newValue, isVoiceLocked(voice) {
+                    pendingLockedVoice = voice
+                    isUnlockSheetPresented = true
+                    selectedVoice = oldValue.flatMap { isVoiceLocked($0) ? nil : $0 } ?? firstAccessibleVoice()
+                    return
+                }
+
+                Preferences.shared.voiceName = newValue?.name ?? ""
+                Preferences.shared.language = newValue?.languageCodes.first ?? "unknown"
+            }
+            .onChange(of: purchaseManager.hasPremiumVoices) { _, hasPremiumVoices in
+                if hasPremiumVoices {
+                    selectDeferredPremiumVoiceIfAvailable()
+                    selectPendingLockedVoiceIfUnlocked()
+                } else {
+                    ensureSelectedVoiceIsAccessible()
+                }
+            }
+            .onChange(of: hotkeyManager.isAccessibilityTrusted) { _, isTrusted in
+                onboardingStep = isTrusted ? .accessibilitySuccess : .accessibility
+            }
+            .onChange(of: editingHotkey) { _, newValue in
+                if newValue {
+                    Task {
+                        saveHotkey((await HotkeyManager.shared.hotkey?.waitForHotkey()) ?? "")
+                        editingHotkey = false
+                    }
+                }
+            }
+    }
+
+    @ViewBuilder
+    private var rootContent: some View {
+        if let mandatoryOnboardingStep {
+            MandatoryOnboardingGate(
+                step: mandatoryOnboardingStep,
+                hotkeyManager: hotkeyManager,
+                googleCloudErrorMessage: hasError ? result : nil,
+                onAccessibilityContinue: continueFromAccessibilitySuccess,
+                onGoogleCloudConnected: handleOnboardingGoogleCloudConnected,
+                onGoogleCloudContinue: continueFromGoogleCloudSuccess
+            )
+        } else {
+            mainAppContent
+        }
+    }
+
+    private var mainAppContent: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: 16) {
                 header
@@ -135,76 +296,6 @@ struct ContentView: View {
             .padding(.horizontal, 28)
             .padding(.top, 24)
             .padding(.bottom, 22)
-        }
-        .background(Color(nsColor: .windowBackgroundColor))
-        .frame(minWidth: 720, minHeight: 590)
-        .sheet(isPresented: $isCredentialsSheetPresented) {
-            CredentialsSetupSheet { newCredentials, voices in
-                saveValidatedCredentials(newCredentials, voices: voices)
-            }
-        }
-        .sheet(isPresented: $isUnlockSheetPresented) {
-            PremiumVoicesUnlockSheet(
-                purchaseManager: purchaseManager,
-                lockedVoice: pendingLockedVoice
-            ) {
-                selectPendingLockedVoiceIfUnlocked()
-            }
-        }
-        .onAppear {
-            if inputText.count > inputLimit {
-                inputText = String(inputText.prefix(inputLimit))
-            }
-
-            if !credentials.isEmpty && availableVoices.isEmpty {
-                startLoadVoicesTask(resetAPI: false)
-            }
-        }
-        .task {
-            await purchaseManager.start()
-        }
-        .onChange(of: inputText) { _, newValue in
-            guard newValue.count > inputLimit else { return }
-            inputText = String(newValue.prefix(inputLimit))
-        }
-        .onChange(of: credentials) { _, newValue in
-            if !newValue.isEmpty {
-                startLoadVoicesTask(resetAPI: true)
-            } else {
-                GoogleTTSAPI.resetSharedInstance()
-                api = nil
-                availableVoices = []
-                availableLanguages = []
-                selectedVoice = nil
-                result = ""
-            }
-        }
-        .onChange(of: selectedVoice) { oldValue, newValue in
-            if let voice = newValue, isVoiceLocked(voice) {
-                pendingLockedVoice = voice
-                isUnlockSheetPresented = true
-                selectedVoice = oldValue.flatMap { isVoiceLocked($0) ? nil : $0 } ?? firstAccessibleVoice()
-                return
-            }
-
-            Preferences.shared.voiceName = newValue?.name ?? ""
-            Preferences.shared.language = newValue?.languageCodes.first ?? "unknown"
-        }
-        .onChange(of: purchaseManager.hasPremiumVoices) { _, hasPremiumVoices in
-            if hasPremiumVoices {
-                selectDeferredPremiumVoiceIfAvailable()
-                selectPendingLockedVoiceIfUnlocked()
-            } else {
-                ensureSelectedVoiceIsAccessible()
-            }
-        }
-        .onChange(of: editingHotkey) { _, newValue in
-            if newValue {
-                Task {
-                    hotkey = (await HotkeyManager.shared.hotkey?.waitForHotkey()) ?? ""
-                    editingHotkey = false
-                }
-            }
         }
     }
 
@@ -221,7 +312,7 @@ struct ContentView: View {
                     .font(.system(size: 30, weight: .bold, design: .rounded))
                     .foregroundStyle(.primary)
 
-                Text("Natural sounding text-to-speech")
+                Text("Assistive text-to-speech for selected text")
                     .font(.system(size: 15, weight: .medium))
                     .foregroundStyle(.secondary)
             }
@@ -272,7 +363,7 @@ struct ContentView: View {
             VStack(spacing: 14) {
                 SettingsRow(symbolName: "globe", title: "Language") {
                     if availableLanguages.isEmpty {
-                        PlaceholderValue(text: isInitializing ? "Loading languages..." : "Add credentials first")
+                        PlaceholderValue(text: languagePlaceholderText)
                     } else {
                         Picker("Language", selection: $selectedLanguage) {
                             Text("All Languages").tag("")
@@ -292,7 +383,7 @@ struct ContentView: View {
 
                 SettingsRow(symbolName: "person.wave.2", title: "Voice") {
                     if availableVoices.isEmpty {
-                        PlaceholderValue(text: isInitializing ? "Loading voices..." : "No voices loaded")
+                        PlaceholderValue(text: voicePlaceholderText)
                     } else {
                         Picker("Voice", selection: $selectedVoice) {
                             ForEach(filteredVoiceGroups) { group in
@@ -341,7 +432,7 @@ struct ContentView: View {
                 Divider()
                     .padding(.leading, 76)
 
-                SettingsRow(symbolName: "keyboard", title: "Hotkey") {
+                SettingsRow(symbolName: "keyboard", title: "Assistive Shortcut") {
                     HStack(spacing: 10) {
                         Text(editingHotkey ? "Press keys" : hotkey)
                             .font(.system(size: 15, weight: .medium))
@@ -355,16 +446,46 @@ struct ContentView: View {
                                     .stroke(Color.secondary.opacity(0.2), lineWidth: 1)
                             )
 
-                        Button(editingHotkey ? "Listening..." : "Change...") {
-                            editingHotkey = true
+                        if !hotkeyManager.isAccessibilityTrusted {
+                            Button("Open Settings") {
+                                hotkeyManager.requestAccessibilityPermission()
+                            }
+                            .controlSize(.regular)
+                            .frame(width: 118)
+
+                            Button("Recheck") {
+                                hotkeyManager.refreshAccessibilityStatus(prompt: false)
+                            }
+                            .controlSize(.regular)
+                            .frame(width: 86)
+                        } else {
+                            Button(editingHotkey ? "Listening..." : "Change...") {
+                                editingHotkey = true
+                            }
+                            .controlSize(.regular)
+                            .frame(width: 122)
+                            .disabled(editingHotkey || !hotkeyManager.canCaptureHotkey)
                         }
-                        .controlSize(.regular)
-                        .frame(width: 122)
-                        .disabled(editingHotkey)
                     }
                 }
             }
         }
+    }
+
+    private var languagePlaceholderText: String {
+        if isInitializing {
+            return "Loading languages..."
+        }
+
+        return hasGoogleCloudCredentials ? "No languages loaded" : "Connect Google Cloud Text-to-Speech first"
+    }
+
+    private var voicePlaceholderText: String {
+        if isInitializing {
+            return "Loading voices..."
+        }
+
+        return hasGoogleCloudCredentials ? "No voices loaded" : "Connect Google Cloud Text-to-Speech first"
     }
 
     private var cloudCard: some View {
@@ -373,7 +494,7 @@ struct ContentView: View {
                 IconTile(symbolName: cloudStatus.symbolName, color: cloudStatus.color)
 
                 VStack(alignment: .leading, spacing: 4) {
-                    Text("Google Cloud")
+                    Text("Google Cloud Text-to-Speech")
                         .font(.system(size: 17, weight: .semibold))
 
                     Text(cloudStatus.title)
@@ -383,16 +504,14 @@ struct ContentView: View {
 
                 Spacer(minLength: 16)
 
-                HStack(spacing: 10) {
-                    if !credentials.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
-                        Button("Remove") {
-                            clearCredentials()
-                        }
-                        .controlSize(.regular)
-                    }
-
-                    Button(credentials.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty ? "Set Up Google Cloud..." : "Manage Credentials...") {
+                if credentials.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                    Button("Connect Google Cloud...") {
                         isCredentialsSheetPresented = true
+                    }
+                    .controlSize(.regular)
+                } else {
+                    Button("Remove") {
+                        isRemoveGoogleCloudConfirmationPresented = true
                     }
                     .controlSize(.regular)
                 }
@@ -407,7 +526,20 @@ struct ContentView: View {
         isCredentialsSheetPresented = false
         GoogleTTSAPI.resetSharedInstance()
         applyVoices(voices)
-        result = "Google Cloud connected. Ready to play."
+        result = "Google Cloud Text-to-Speech connected. Ready to read aloud."
+    }
+
+    private func continueFromAccessibilitySuccess() {
+        onboardingStep = .googleCloud
+    }
+
+    private func handleOnboardingGoogleCloudConnected(_ newCredentials: String, voices: [TTSVoice]) {
+        saveValidatedCredentials(newCredentials, voices: voices)
+        onboardingStep = .googleCloudSuccess
+    }
+
+    private func continueFromGoogleCloudSuccess() {
+        onboardingStep = .googleCloud
     }
 
     private func clearCredentials() {
@@ -419,6 +551,16 @@ struct ContentView: View {
         availableLanguages = []
         selectedVoice = nil
         result = ""
+    }
+
+    private func normalizeStoredHotkey() {
+        saveHotkey(hotkey)
+    }
+
+    private func saveHotkey(_ newHotkey: String) {
+        let canonicalHotkey = HotkeyFormatter.canonicalize(newHotkey)
+        Preferences.shared.hotkey = canonicalHotkey
+        hotkey = canonicalHotkey
     }
 
     private func startLoadVoicesTask(resetAPI: Bool) {
@@ -442,10 +584,10 @@ struct ContentView: View {
                     switch fetchResult {
                     case .success(let voices):
                         if voices.isEmpty {
-                            result = "Google Cloud connected, but no Text-to-Speech voices were returned. Try again in a moment."
+                            result = "Google Cloud Text-to-Speech connected, but no voices were returned. Try again in a moment."
                         } else {
                             applyVoices(voices)
-                            result = "Success! Ready to play"
+                            result = "Success! Ready to read aloud."
                         }
                     case .failure(let error):
                         self.availableVoices = []
@@ -649,12 +791,16 @@ private struct PremiumVoicesUnlockSheet: View {
     let onUnlocked: () -> Void
 
     private var priceText: String {
-        purchaseManager.premiumVoicesProduct?.displayPrice ?? "one-time purchase"
+        purchaseManager.premiumVoicesProduct?.displayPrice ?? "$9.99"
+    }
+
+    private var contentLeadingInset: CGFloat {
+        44 + 14
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 18) {
-            HStack(spacing: 14) {
+            HStack(alignment: .top, spacing: 14) {
                 IconTile(symbolName: "lock.open.fill", color: .orange)
 
                 VStack(alignment: .leading, spacing: 4) {
@@ -671,23 +817,26 @@ private struct PremiumVoicesUnlockSheet: View {
                 .font(.system(size: 14, weight: .medium))
                 .foregroundStyle(.secondary)
                 .fixedSize(horizontal: false, vertical: true)
+                .padding(.leading, contentLeadingInset)
 
             if let statusMessage = purchaseManager.statusMessage {
                 Text(statusMessage)
                     .font(.system(size: 13, weight: .medium))
                     .foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
+                    .padding(.leading, contentLeadingInset)
             }
 
             HStack(spacing: 10) {
+                Spacer(minLength: 0)
+
                 Button {
                     dismiss()
                 } label: {
-                    Label("Not Now", systemImage: "xmark")
+                    Label("Cancel", systemImage: "xmark")
+                        .frame(minWidth: 112, minHeight: 30)
                 }
                 .controlSize(.large)
-
-                Spacer()
 
                 Button {
                     Task {
@@ -698,7 +847,8 @@ private struct PremiumVoicesUnlockSheet: View {
                         }
                     }
                 } label: {
-                    Label("Restore", systemImage: "arrow.clockwise")
+                    Label("Restore purchases", systemImage: "arrow.clockwise")
+                        .frame(minWidth: 156, minHeight: 30)
                 }
                 .controlSize(.large)
                 .disabled(purchaseManager.isLoading)
@@ -712,15 +862,18 @@ private struct PremiumVoicesUnlockSheet: View {
                         }
                     }
                 } label: {
-                    Label("Buy \(priceText)", systemImage: "cart.fill")
+                    Label("Buy premium voices", systemImage: "cart.fill")
+                        .frame(minWidth: 156, minHeight: 30)
                 }
-                .buttonStyle(OrangeProminentButtonStyle())
+                .buttonStyle(.borderedProminent)
+                .tint(.orange)
                 .controlSize(.large)
                 .disabled(purchaseManager.isLoading)
             }
+            .padding(.top, 2)
         }
         .padding(24)
-        .frame(width: 500)
+        .frame(width: 560, alignment: .leading)
         .onAppear {
             purchaseManager.clearStatusMessage()
         }
@@ -802,41 +955,399 @@ private struct WaveformView: View {
     }
 }
 
+private enum MandatoryOnboardingStep {
+    case accessibility
+    case accessibilitySuccess
+    case googleCloud
+    case googleCloudSuccess
+}
+
+private struct MandatoryOnboardingGate: View {
+    let step: MandatoryOnboardingStep
+    @ObservedObject var hotkeyManager: HotkeyManager
+    let googleCloudErrorMessage: String?
+    let onAccessibilityContinue: () -> Void
+    let onGoogleCloudConnected: (String, [TTSVoice]) -> Void
+    let onGoogleCloudContinue: () -> Void
+
+    var body: some View {
+        Group {
+            switch step {
+            case .accessibility:
+                OnboardingPageShell(activeDot: 0) {
+                    accessibilityVisual
+
+                    Text("Enable assistive selected-text reading")
+                        .font(.system(size: 34, weight: .bold, design: .rounded))
+                        .multilineTextAlignment(.center)
+
+                    Text("Smooth Talker uses macOS Accessibility to access the text you select in other apps. When you press your shortcut, Smooth Talker reads the selected text aloud, providing assistive reading support.")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(5)
+                        .frame(maxWidth: 720)
+
+                    Button {
+                        hotkeyManager.requestAccessibilityPermission()
+                    } label: {
+                        Text("OPEN ACCESSIBILITY")
+                            .font(.system(size: 15, weight: .bold))
+                            .frame(minWidth: 190, minHeight: 42)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .tint(.orange)
+                    .keyboardShortcut(.defaultAction)
+                    .padding(.top, 8)
+                }
+
+            case .accessibilitySuccess:
+                OnboardingPageShell(activeDot: 0) {
+                    OnboardingSuccessVisual(symbolName: "figure.wave")
+
+                    Text("Assistive reading permission enabled")
+                        .font(.system(size: 34, weight: .bold, design: .rounded))
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 760)
+
+                    Button {
+                        onAccessibilityContinue()
+                    } label: {
+                        Text("CONTINUE")
+                            .font(.system(size: 15, weight: .bold))
+                            .frame(minWidth: 116, minHeight: 42)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .tint(.orange)
+                    .keyboardShortcut(.defaultAction)
+                    .padding(.top, 14)
+                }
+
+            case .googleCloud:
+                OnboardingPageShell(activeDot: 1) {
+                    GoogleCloudOnboardingVisual()
+
+                    Text("Set up Google Cloud Text-to-Speech")
+                        .font(.system(size: 34, weight: .bold, design: .rounded))
+                        .multilineTextAlignment(.center)
+
+                    Text("Smooth Talker uses Google Cloud Text-to-Speech for natural voices. Connect Google Cloud to create and validate Text-to-Speech credentials automatically.")
+                        .font(.system(size: 16, weight: .medium))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .lineLimit(4)
+                        .frame(maxWidth: 760)
+
+                    if let googleCloudErrorMessage {
+                        Label(googleCloudErrorMessage, systemImage: "exclamationmark.triangle.fill")
+                            .font(.system(size: 13, weight: .semibold))
+                            .foregroundStyle(.orange)
+                            .multilineTextAlignment(.center)
+                            .frame(maxWidth: 660)
+                    }
+
+                    GoogleCloudSetupPanel(presentation: .onboarding) { credentials, voices in
+                        onGoogleCloudConnected(credentials, voices)
+                    }
+                    .frame(maxWidth: 620)
+                    .padding(.top, 4)
+                }
+
+            case .googleCloudSuccess:
+                OnboardingPageShell(activeDot: 1) {
+                    OnboardingSuccessVisual(symbolName: "cloud.fill")
+
+                    Text("Google Cloud Text-to-Speech setup complete")
+                        .font(.system(size: 34, weight: .bold, design: .rounded))
+                        .multilineTextAlignment(.center)
+                        .frame(maxWidth: 760)
+
+                    Button {
+                        onGoogleCloudContinue()
+                    } label: {
+                        Text("CONTINUE")
+                            .font(.system(size: 15, weight: .bold))
+                            .frame(minWidth: 116, minHeight: 42)
+                    }
+                    .buttonStyle(.borderedProminent)
+                    .controlSize(.large)
+                    .tint(.orange)
+                    .keyboardShortcut(.defaultAction)
+                    .padding(.top, 14)
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private var accessibilityVisual: some View {
+        LoopingOnboardingVideoView(resourceName: "My Movie")
+            .frame(width: 470, height: 264)
+            .clipShape(RoundedRectangle(cornerRadius: 10, style: .continuous))
+            .overlay(
+                RoundedRectangle(cornerRadius: 10, style: .continuous)
+                    .stroke(Color.secondary.opacity(0.14), lineWidth: 1)
+            )
+            .shadow(color: .black.opacity(0.08), radius: 18, y: 10)
+            .padding(.bottom, 8)
+    }
+}
+
+private struct OnboardingPageShell<Content: View>: View {
+    let activeDot: Int
+    @ViewBuilder let content: Content
+
+    var body: some View {
+        VStack(spacing: 0) {
+            Spacer(minLength: 24)
+
+            VStack(spacing: 18) {
+                content
+            }
+            .frame(maxWidth: .infinity)
+            .padding(.horizontal, 56)
+
+            Spacer(minLength: 22)
+
+            HStack(spacing: 8) {
+                ForEach(0..<2, id: \.self) { index in
+                    Circle()
+                        .fill(index == activeDot ? Color.orange : Color.secondary.opacity(0.2))
+                        .frame(width: 9, height: 9)
+                }
+            }
+            .padding(.bottom, 46)
+            .accessibilityHidden(true)
+        }
+    }
+}
+
+private struct OnboardingSuccessVisual: View {
+    let symbolName: String
+
+    var body: some View {
+        ZStack {
+            Circle()
+                .fill(Color.orange.opacity(0.08))
+                .frame(width: 184, height: 184)
+
+            Circle()
+                .fill(Color.green.opacity(0.14))
+                .frame(width: 128, height: 128)
+
+            Image(systemName: "checkmark.circle.fill")
+                .font(.system(size: 76, weight: .bold))
+                .foregroundStyle(.green)
+                .shadow(color: .green.opacity(0.22), radius: 14, y: 8)
+
+            Image(systemName: symbolName)
+                .font(.system(size: 30, weight: .semibold))
+                .foregroundStyle(.orange)
+                .offset(x: 58, y: -54)
+        }
+        .frame(width: 220, height: 190)
+        .padding(.bottom, 8)
+        .accessibilityHidden(true)
+    }
+}
+
+private struct GoogleCloudOnboardingVisual: View {
+    var body: some View {
+        ZStack {
+            RoundedRectangle(cornerRadius: 14, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+                .frame(width: 356, height: 190)
+                .overlay(
+                    RoundedRectangle(cornerRadius: 14, style: .continuous)
+                        .stroke(Color.secondary.opacity(0.16), lineWidth: 1)
+                )
+                .shadow(color: .black.opacity(0.08), radius: 18, y: 10)
+
+            VStack(spacing: 18) {
+                HStack(spacing: 8) {
+                    Circle().fill(Color.red.opacity(0.35)).frame(width: 9, height: 9)
+                    Circle().fill(Color.yellow.opacity(0.55)).frame(width: 9, height: 9)
+                    Circle().fill(Color.green.opacity(0.45)).frame(width: 9, height: 9)
+                    Spacer()
+                }
+                .frame(width: 300)
+
+                HStack(spacing: 18) {
+                    Image(systemName: "cloud.fill")
+                        .font(.system(size: 58, weight: .semibold))
+                        .foregroundStyle(.blue)
+
+                    VStack(alignment: .leading, spacing: 10) {
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .fill(Color.secondary.opacity(0.24))
+                            .frame(width: 150, height: 12)
+
+                        RoundedRectangle(cornerRadius: 4, style: .continuous)
+                            .fill(Color.secondary.opacity(0.18))
+                            .frame(width: 188, height: 12)
+
+                        RoundedRectangle(cornerRadius: 6, style: .continuous)
+                            .fill(Color.orange.opacity(0.92))
+                            .frame(width: 92, height: 24)
+                    }
+                }
+
+                HStack(spacing: 10) {
+                    Image(systemName: "key.fill")
+                        .font(.system(size: 18, weight: .semibold))
+                        .foregroundStyle(.orange)
+
+                    RoundedRectangle(cornerRadius: 5, style: .continuous)
+                        .fill(Color(nsColor: .textBackgroundColor))
+                        .frame(width: 220, height: 30)
+                        .overlay(
+                            RoundedRectangle(cornerRadius: 5, style: .continuous)
+                                .stroke(Color.orange.opacity(0.45), lineWidth: 1)
+                        )
+                }
+            }
+        }
+        .frame(width: 420, height: 220)
+        .padding(.bottom, 6)
+        .accessibilityHidden(true)
+    }
+}
+
+private struct LoopingOnboardingVideoView: View {
+    @StateObject private var playerModel: OnboardingVideoPlayerModel
+
+    init(resourceName: String) {
+        _playerModel = StateObject(wrappedValue: OnboardingVideoPlayerModel(resourceName: resourceName))
+    }
+
+    var body: some View {
+        Group {
+            if let player = playerModel.player {
+                OnboardingPlayerView(player: player)
+                    .onAppear {
+                        playerModel.play()
+                    }
+                    .onDisappear {
+                        playerModel.pause()
+                    }
+            } else {
+                VStack(spacing: 8) {
+                    Image(systemName: "film")
+                        .font(.system(size: 24, weight: .semibold))
+                        .foregroundStyle(.secondary)
+
+                    Text("Open Accessibility Settings, add Smooth Talker, then turn on assistive reading access.")
+                        .font(.system(size: 12, weight: .medium))
+                        .multilineTextAlignment(.center)
+                        .foregroundStyle(.secondary)
+                        .padding(.horizontal, 18)
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity)
+                .background(Color(nsColor: .controlBackgroundColor))
+            }
+        }
+    }
+}
+
+@MainActor
+private final class OnboardingVideoPlayerModel: ObservableObject {
+    let player: AVQueuePlayer?
+    private var playerLooper: AVPlayerLooper?
+
+    init(resourceName: String) {
+        let videoURL = Bundle.main.url(forResource: resourceName, withExtension: "mp4", subdirectory: "Resources") ??
+            Bundle.main.url(forResource: resourceName, withExtension: "mp4")
+
+        guard let videoURL else {
+            player = nil
+            return
+        }
+
+        let playerItem = AVPlayerItem(url: videoURL)
+        let player = AVQueuePlayer()
+        player.isMuted = true
+
+        self.player = player
+        playerLooper = AVPlayerLooper(player: player, templateItem: playerItem)
+    }
+
+    func play() {
+        player?.seek(to: .zero)
+        player?.play()
+    }
+
+    func pause() {
+        player?.pause()
+    }
+}
+
+private struct OnboardingPlayerView: NSViewRepresentable {
+    let player: AVPlayer
+
+    func makeNSView(context: Context) -> AVPlayerView {
+        let playerView = AVPlayerView()
+        playerView.player = player
+        playerView.controlsStyle = .none
+        playerView.videoGravity = .resizeAspectFill
+        return playerView
+    }
+
+    func updateNSView(_ nsView: AVPlayerView, context: Context) {
+        nsView.player = player
+    }
+}
+
 private enum CredentialValidationState {
     case idle
     case validating(String)
     case success(String)
     case failure(String)
+
+    var isValidating: Bool {
+        if case .validating = self {
+            return true
+        }
+
+        return false
+    }
 }
 
 private struct CredentialsSetupSheet: View {
+    let onSave: (String, [TTSVoice]) -> Void
+
+    var body: some View {
+        GoogleCloudSetupPanel(presentation: .compactSheet, onSave: onSave)
+    }
+}
+
+private enum GoogleCloudSetupPresentation {
+    case compactSheet
+    case onboarding
+}
+
+private struct GoogleCloudSetupPanel: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var automaticSetup = GoogleCloudSetupModel()
     @State private var validationState: CredentialValidationState = .idle
+    let presentation: GoogleCloudSetupPresentation
     let onSave: (String, [TTSVoice]) -> Void
 
-    init(onSave: @escaping (String, [TTSVoice]) -> Void) {
+    init(presentation: GoogleCloudSetupPresentation, onSave: @escaping (String, [TTSVoice]) -> Void) {
+        self.presentation = presentation
         self.onSave = onSave
     }
 
     var body: some View {
-        HStack(spacing: 0) {
-            setupIntro
-
-            Divider()
-
-            ScrollView {
-                VStack(alignment: .leading, spacing: 22) {
-                    automaticSetupContent
-
-                    Divider()
-
-                    footer
-                }
-                .padding(26)
+        Group {
+            switch presentation {
+            case .compactSheet:
+                compactBody
+            case .onboarding:
+                onboardingBody
             }
         }
-        .frame(width: 860, height: 640)
         .onChange(of: automaticSetup.generatedCredentialsJSON) { _, credentialsJSON in
             guard let credentialsJSON else { return }
             automaticSetup.resetGeneratedCredentials()
@@ -844,79 +1355,110 @@ private struct CredentialsSetupSheet: View {
         }
     }
 
-    private var setupIntro: some View {
-        VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Google Cloud")
-                    .font(.system(size: 24, weight: .bold, design: .rounded))
+    private var compactBody: some View {
+        VStack(alignment: .trailing, spacing: 14) {
+            setupStatus
 
-                Text("Connect Smooth Talker to your own Text-to-Speech project.")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: 8) {
+                Button("Cancel") {
+                    dismiss()
+                }
+                .keyboardShortcut(.cancelAction)
+
+                setupButton
             }
-            .padding(.bottom, 8)
-
-            Label("Automatic setup", systemImage: "wand.and.stars")
-                .font(.system(size: 14, weight: .semibold))
-                .foregroundStyle(.white)
-                .padding(.horizontal, 12)
-                .frame(maxWidth: .infinity, minHeight: 42, alignment: .leading)
-                .background(
-                    RoundedRectangle(cornerRadius: 8, style: .continuous)
-                        .fill(Color.orange)
-                )
-
-            Spacer()
-
-            Text("Smooth Talker creates and saves credentials automatically after validation.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
         }
-        .padding(22)
-        .frame(width: 230)
-        .frame(maxHeight: .infinity, alignment: .topLeading)
-        .background(Color(nsColor: .controlBackgroundColor))
+        .padding(24)
+        .frame(width: 320)
     }
 
-    private var automaticSetupContent: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            GoogleCloudAutomaticSetupPanel(model: automaticSetup)
-            validationStatus
+    private var onboardingBody: some View {
+        VStack(spacing: 12) {
+            setupStatus
+                .frame(maxWidth: 560)
+
+            setupButton
         }
+    }
+
+    private var setupButton: some View {
+        Button {
+            connect()
+        } label: {
+            Text(setupButtonTitle)
+                .font(.system(size: 15, weight: .bold))
+                .frame(minWidth: presentation == .onboarding ? 190 : 0, minHeight: presentation == .onboarding ? 42 : 0)
+        }
+        .keyboardShortcut(.defaultAction)
+        .buttonStyle(.borderedProminent)
+        .controlSize(presentation == .onboarding ? .large : .regular)
+        .tint(.orange)
+        .disabled(isConnectDisabled)
     }
 
     @ViewBuilder
-    private var validationStatus: some View {
-        switch validationState {
-        case .idle:
-            EmptyView()
-        case .validating(let message):
-            Label(message, systemImage: "arrow.triangle.2.circlepath")
-                .foregroundStyle(.orange)
-                .font(.system(size: 14, weight: .medium))
-        case .success(let message):
-            Label(message, systemImage: "checkmark.circle.fill")
-                .foregroundStyle(.green)
-                .font(.system(size: 14, weight: .medium))
-        case .failure(let message):
-            Label(message, systemImage: "exclamationmark.triangle.fill")
-                .foregroundStyle(.red)
-                .font(.system(size: 14, weight: .medium))
+    private var setupStatus: some View {
+        if let status = currentSetupStatus {
+            Label(status.message, systemImage: status.symbolName)
+                .font(.system(size: 13, weight: .medium))
+                .foregroundStyle(status.color)
+                .multilineTextAlignment(presentation == .onboarding ? .center : .leading)
                 .fixedSize(horizontal: false, vertical: true)
+                .frame(maxWidth: .infinity, alignment: presentation == .onboarding ? .center : .leading)
         }
     }
 
-    private var footer: some View {
-        HStack {
-            Button("Cancel") {
-                dismiss()
-            }
-            .keyboardShortcut(.cancelAction)
-
-            Spacer()
+    private var currentSetupStatus: (message: String, symbolName: String, color: Color)? {
+        switch validationState {
+        case .idle:
+            break
+        case .validating(let message):
+            return (message, "arrow.triangle.2.circlepath", .orange)
+        case .success(let message):
+            return (message, "checkmark.circle.fill", .green)
+        case .failure(let message):
+            return (message, "exclamationmark.triangle.fill", .red)
         }
+
+        switch automaticSetup.stage {
+        case .idle:
+            if presentation == .onboarding {
+                return (automaticSetup.statusMessage, "cloud.fill", .secondary)
+            }
+
+            return nil
+        case .waitingForBilling:
+            return (automaticSetup.statusMessage, "creditcard.fill", .orange)
+        case .readyToValidate:
+            return (automaticSetup.statusMessage, "arrow.triangle.2.circlepath", .orange)
+        case .failed(let message):
+            return (message, "exclamationmark.triangle.fill", .red)
+        default:
+            if automaticSetup.stage.isBusy {
+                return (automaticSetup.statusMessage, "arrow.triangle.2.circlepath", .orange)
+            }
+
+            return nil
+        }
+    }
+
+    private var isConnectDisabled: Bool {
+        automaticSetup.stage.isBusy ||
+            validationState.isValidating
+    }
+
+    private var setupButtonTitle: String {
+        switch presentation {
+        case .compactSheet:
+            return "Connect"
+        case .onboarding:
+            return "CONNECT GOOGLE CLOUD"
+        }
+    }
+
+    private func connect() {
+        validationState = .idle
+        automaticSetup.startAutomaticSetup()
     }
 
     private func validateAndConnect(_ credentialsJSON: String) {
@@ -924,7 +1466,7 @@ private struct CredentialsSetupSheet: View {
 
         do {
             let info = try GoogleServiceAccountCredentials.validate(trimmedCredentials)
-            validationState = .validating("Finalizing Google Cloud setup for \(info.projectID)...")
+            validationState = .validating("Finalizing Google Cloud Text-to-Speech setup for \(info.projectID)...")
         } catch {
             validationState = .failure(error.localizedDescription)
             return
@@ -951,19 +1493,19 @@ private struct CredentialsSetupSheet: View {
                 retryOrFail(
                     credentialsJSON: credentialsJSON,
                     attempt: attempt,
-                    message: "Google Cloud connected, but voices are still loading. Trying again..."
+                    message: "Google Cloud Text-to-Speech connected, but voices are still loading. Trying again..."
                 )
                 return
             }
 
             onSave(credentialsJSON, voices)
-            validationState = .success("Connected to Google Cloud.")
+            validationState = .success("Connected to Google Cloud Text-to-Speech.")
         case .failure(let error):
             if shouldRetryValidation(error), attempt < 5 {
                 retryOrFail(
                     credentialsJSON: credentialsJSON,
                     attempt: attempt,
-                    message: "Google Cloud is finishing setup. Trying again..."
+                    message: "Google Cloud Text-to-Speech is finishing setup. Trying again..."
                 )
             } else {
                 validationState = .failure(GoogleTTSError.userMessage(for: error))
@@ -974,7 +1516,7 @@ private struct CredentialsSetupSheet: View {
 
     private func retryOrFail(credentialsJSON: String, attempt: Int, message: String) {
         guard attempt < 5 else {
-            validationState = .failure("Google Cloud connected, but no Text-to-Speech voices were returned. Try again in a moment.")
+            validationState = .failure("Google Cloud Text-to-Speech connected, but no voices were returned. Try again in a moment.")
             GoogleTTSAPI.resetSharedInstance()
             return
         }
@@ -1014,276 +1556,6 @@ private struct CredentialsSetupSheet: View {
         }
 
         return false
-    }
-}
-
-private struct GoogleCloudAutomaticSetupPanel: View {
-    @ObservedObject var model: GoogleCloudSetupModel
-    @State private var selectedBillingAccountID = ""
-    @State private var selectedProjectID = ""
-
-    var body: some View {
-        VStack(alignment: .leading, spacing: 20) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("Automatic Setup")
-                    .font(.title2.bold())
-
-                Text("Let Smooth Talker sign into Google, configure Text-to-Speech, and create credentials automatically.")
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-            }
-
-            statusPanel
-            actionPanel
-        }
-        .onChange(of: model.existingProjects) { _, projects in
-            if selectedProjectID.isEmpty, let firstProject = projects.first {
-                selectedProjectID = firstProject.id
-            }
-        }
-        .onChange(of: model.billingAccounts) { _, accounts in
-            if selectedBillingAccountID.isEmpty, let firstAccount = accounts.first {
-                selectedBillingAccountID = firstAccount.id
-            }
-        }
-    }
-
-    private var statusPanel: some View {
-        HStack(alignment: .top, spacing: 14) {
-            ProgressIcon(stage: model.stage)
-
-            VStack(alignment: .leading, spacing: 6) {
-                Text(statusTitle)
-                    .font(.system(size: 17, weight: .semibold))
-
-                Text(model.statusMessage)
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                if let projectID = model.projectID {
-                    Text(projectID)
-                        .font(.system(size: 12, weight: .semibold, design: .monospaced))
-                        .foregroundStyle(.orange)
-                }
-            }
-
-            Spacer(minLength: 0)
-        }
-        .padding(14)
-        .background(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .fill(Color(nsColor: .textBackgroundColor))
-        )
-        .overlay(
-            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                .stroke(Color.secondary.opacity(0.16), lineWidth: 1)
-        )
-    }
-
-    @ViewBuilder
-    private var actionPanel: some View {
-        switch model.stage {
-        case .idle:
-            startButton
-        case .choosingProject:
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Create a new dedicated project, or use an existing Google Cloud project.")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                if !model.existingProjects.isEmpty {
-                    Picker("Existing Project", selection: $selectedProjectID) {
-                        ForEach(model.existingProjects) { project in
-                            Text(project.title).tag(project.id)
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .frame(maxWidth: .infinity)
-                }
-
-                HStack(spacing: 10) {
-                    Button("Create New Project") {
-                        model.createNewProjectAndContinue()
-                    }
-                    .controlSize(.large)
-                    .buttonStyle(.borderedProminent)
-
-                    Button("Use Selected Project") {
-                        guard let project = model.existingProjects.first(where: { $0.id == selectedProjectID }) else { return }
-                        model.useExistingProject(project)
-                    }
-                    .controlSize(.large)
-                    .disabled(selectedProjectID.isEmpty)
-                }
-            }
-        case .waitingForBilling:
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Link billing to this project in Google Cloud. Leave this window open, then retry the billing check.")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                HStack(spacing: 10) {
-                    Button("Link Billing Manually") {
-                        model.openProjectBillingConsole()
-                    }
-                    .controlSize(.large)
-
-                    Button("Retry Billing Check") {
-                        model.retryBillingCheckAndContinue()
-                    }
-                    .controlSize(.large)
-                    .buttonStyle(.borderedProminent)
-                }
-            }
-        case .choosingBilling:
-            VStack(alignment: .leading, spacing: 12) {
-                Text("Confirm before linking billing to this project.")
-                    .font(.system(size: 13, weight: .medium))
-                    .foregroundStyle(.secondary)
-                    .fixedSize(horizontal: false, vertical: true)
-
-                Picker("Billing Account", selection: $selectedBillingAccountID) {
-                    ForEach(model.billingAccounts) { account in
-                        Text(account.title).tag(account.id)
-                    }
-                }
-                .pickerStyle(.menu)
-                .frame(maxWidth: .infinity)
-
-                Button("Link Billing and Continue") {
-                    guard let account = model.billingAccounts.first(where: { $0.id == selectedBillingAccountID }) else { return }
-                    model.useBillingAccount(account)
-                }
-                .controlSize(.large)
-                .buttonStyle(.borderedProminent)
-                .disabled(selectedBillingAccountID.isEmpty)
-            }
-        case .failed:
-            switch model.failureReason {
-            case .missingConfig:
-                Button("Try Again") {
-                    model.startAutomaticSetup()
-                }
-                .controlSize(.large)
-                .buttonStyle(.borderedProminent)
-            case .billing:
-                HStack(spacing: 10) {
-                    Button("Link Billing Manually") {
-                        model.openProjectBillingConsole()
-                    }
-                    .controlSize(.large)
-
-                    Button("Retry Billing Check") {
-                        model.retryBillingCheckAndContinue()
-                    }
-                    .controlSize(.large)
-                    .buttonStyle(.borderedProminent)
-                }
-            default:
-                Button("Try Again") {
-                    model.startAutomaticSetup()
-                }
-                .controlSize(.large)
-                .buttonStyle(.borderedProminent)
-            }
-        default:
-            EmptyView()
-        }
-    }
-
-    private var startButton: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            Text("Google will ask you to sign in so Smooth Talker can configure a Text-to-Speech project in your account.")
-                .font(.system(size: 13, weight: .medium))
-                .foregroundStyle(.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-
-            Button("Start Automatic Setup") {
-                model.startAutomaticSetup()
-            }
-            .controlSize(.large)
-            .buttonStyle(.borderedProminent)
-        }
-    }
-
-    private var statusTitle: String {
-        switch model.stage {
-        case .idle:
-            return "Ready to start"
-        case .signingIn:
-            return "Signing into Google"
-        case .loadingProjects:
-            return "Loading projects"
-        case .choosingProject:
-            return "Choose project"
-        case .creatingProject:
-            return "Creating project"
-        case .checkingBilling:
-            return "Checking billing"
-        case .waitingForBilling:
-            return "Billing needed"
-        case .choosingBilling:
-            return "Choose billing"
-        case .linkingBilling:
-            return "Linking billing"
-        case .enablingServices:
-            return "Enabling APIs"
-        case .creatingCredentials:
-            return "Creating credentials"
-        case .readyToValidate:
-            return "Validating setup"
-        case .failed:
-            if model.failureReason == .missingConfig {
-                return "Automatic Setup Not Configured"
-            }
-            return "Setup needs attention"
-        }
-    }
-}
-
-private struct ProgressIcon: View {
-    let stage: GoogleCloudSetupStage
-
-    var body: some View {
-        Image(systemName: symbolName)
-            .font(.system(size: 22, weight: .semibold))
-            .foregroundStyle(color)
-            .frame(width: 42, height: 42)
-            .background(
-                RoundedRectangle(cornerRadius: 10, style: .continuous)
-                    .fill(color.opacity(0.12))
-            )
-    }
-
-    private var symbolName: String {
-        switch stage {
-        case .failed:
-            return "exclamationmark.triangle.fill"
-        case .waitingForBilling:
-            return "creditcard.fill"
-        case .readyToValidate:
-            return "checkmark.circle.fill"
-        case let stage where stage.isBusy:
-            return "arrow.triangle.2.circlepath"
-        default:
-            return "wand.and.stars"
-        }
-    }
-
-    private var color: Color {
-        switch stage {
-        case .failed:
-            return .red
-        case .readyToValidate:
-            return .green
-        case .waitingForBilling, .choosingBilling, .choosingProject:
-            return .orange
-        default:
-            return .secondary
-        }
     }
 }
 
