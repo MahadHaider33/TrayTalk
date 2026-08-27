@@ -1,6 +1,6 @@
 //
 //  api.swift
-//  TrayTalk
+//  Smooth Talker
 //
 //  Created by Sem Visscher on 24/12/2024.
 //
@@ -73,11 +73,11 @@ enum GoogleTTSError: LocalizedError {
         case .invalidURL:
             return "Smooth Talker could not reach Google Cloud because the service URL is invalid."
         case .invalidCredentials:
-            return "The Google Cloud credentials could not be read. Import the downloaded service account JSON again."
+            return "The Google Cloud credentials could not be read. Run Automatic Setup again."
         case .authenticationFailed(let message):
-            return "Google rejected the credentials. Download a new service account JSON key and try again. \(message)"
+            return "Google rejected the credentials. Run Automatic Setup again. \(message)"
         case .noToken:
-            return "Google did not return an access token. Download a new service account JSON key and try again."
+            return "Google did not return an access token. Run Automatic Setup again."
         case .invalidResponse:
             return "Google Cloud returned a response Smooth Talker could not understand. Try again in a moment."
         case .httpError(let code, let body):
@@ -133,9 +133,9 @@ enum GoogleTTSError: LocalizedError {
         case 400:
             return googleMessage ?? "Google Cloud could not accept this request. Check the selected voice and credentials."
         case 401:
-            return "The service account key could not be authenticated. Download a new JSON key from Google Cloud and import it."
+            return "The Google Cloud credentials could not be authenticated. Run Automatic Setup again."
         case 403:
-            return googleMessage ?? "The service account does not have access to Cloud Text-to-Speech, or the project needs billing/API setup."
+            return googleMessage ?? "Smooth Talker does not have access to Cloud Text-to-Speech, or the project needs billing/API setup."
         case 404:
             return "Google Cloud could not find the requested Text-to-Speech resource. Confirm the API is enabled for this project."
         case 429:
@@ -166,7 +166,7 @@ class GoogleTTSAPI {
     private var tokenExpirationDate: Date?
     private var isInitializing = false
     private var initializationCompletion: (() -> Void)?
-    private let audioTasksQueue = DispatchQueue(label: "com.traytalk.google-tts.audio-tasks")
+    private let audioTasksQueue = DispatchQueue(label: "com.kriyak.smoothtalker.google-tts.audio-tasks")
     private var audioTasksBySession: [UUID: [UUID: URLSessionDataTask]] = [:]
     private var cancelledAudioSessions: Set<UUID> = []
     
@@ -242,17 +242,13 @@ class GoogleTTSAPI {
     }
     
     private func getAccessToken(completion: @escaping (Result<String, Error>) -> Void) {
-        print("Getting access token...")
-        
         // Check if we have a valid cached token
         if let token = cachedToken, isTokenValid() {
-            print("Using cached token")
             completion(.success(token))
             return
         }
         
         guard let credentialsData = credentials.data(using: .utf8) else {
-            print("Failed to convert credentials to data")
             completion(.failure(GoogleTTSError.invalidCredentials))
             return
         }
@@ -261,23 +257,19 @@ class GoogleTTSAPI {
             credentialsData: credentialsData,
             scopes: [scope]
         ) else {
-            print("Failed to create authentication provider")
             completion(.failure(GoogleTTSError.authenticationFailed("Failed to create token provider")))
             return
         }
         
-        print("Requesting new token...")
         do {
             try authentication.withToken { [weak self] token, error in
                 if let error = error {
-                    print("Token error: \(error.localizedDescription)")
                     completion(.failure(GoogleTTSError.authenticationFailed(error.localizedDescription)))
                     return
                 }
                 
                 guard let token = token,
                       let accessToken = token.AccessToken else {
-                    print("No token received")
                     completion(.failure(GoogleTTSError.noToken))
                     return
                 }
@@ -288,11 +280,9 @@ class GoogleTTSAPI {
                     self?.tokenExpirationDate = Date().addingTimeInterval(TimeInterval(expiresIn))
                 }
                 
-                print("Got new access token")
                 completion(.success(accessToken))
             }
         } catch {
-            print("Token request failed: \(error.localizedDescription)")
             completion(.failure(GoogleTTSError.authenticationFailed(error.localizedDescription)))
         }
     }
@@ -302,8 +292,6 @@ class GoogleTTSAPI {
             let inactiveSessionIDs = audioTasksBySession.keys.filter { $0 != activeSpeechID }
             
             for sessionID in inactiveSessionIDs {
-                let cancelledCount = audioTasksBySession[sessionID]?.count ?? 0
-                TTSLogger.log("session=\(TTSLogger.shortID(sessionID)) cancelled inactive-session pendingRequests=\(cancelledCount)")
                 audioTasksBySession[sessionID]?.values.forEach { $0.cancel() }
                 audioTasksBySession.removeValue(forKey: sessionID)
                 cancelledAudioSessions.insert(sessionID)
@@ -311,33 +299,25 @@ class GoogleTTSAPI {
         }
     }
     
-    func getAudio(text: String, language: String, voiceName: String, speed: Double, speechID: UUID, chunkLabel: String, completion: @escaping (Result<Data, Error>) -> Void) {
-        let requestedAt = Date()
-        TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=\(chunkLabel) getAudio-requested chars=\(text.count)", date: requestedAt)
+    func getAudio(text: String, language: String, voiceName: String, speed: Double, speechID: UUID, chunkLabel _: String, completion: @escaping (Result<Data, Error>) -> Void) {
         registerAudioSession(speechID)
         
         DispatchQueue.global(qos: .userInitiated).async { [weak self] in
-            TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=\(chunkLabel) token-requested voice=\(voiceName) speed=\(speed)")
             self?.getAccessToken { result in
                 switch result {
                 case .success(let token):
                     guard self?.isAudioSessionCancelled(speechID) == false else {
-                        TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=\(chunkLabel) cancelled before-task")
                         return
                     }
                     
-                    TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=\(chunkLabel) token-ready elapsed=\(Self.elapsedString(since: requestedAt))")
                     self?.performAudioRequest(with: token,
                                               text: text,
                                               language: language,
                                               voiceName: voiceName,
                                               speed: speed,
                                               speechID: speechID,
-                                              chunkLabel: chunkLabel,
-                                              requestedAt: requestedAt,
                                               completion: completion)
                 case .failure(let error):
-                    print("Token acquisition failed: \(error)")
                     DispatchQueue.main.async {
                         completion(.failure(error))
                     }
@@ -346,10 +326,8 @@ class GoogleTTSAPI {
         }
     }
     
-    private func performAudioRequest(with token: String, text: String, language: String, voiceName: String, speed: Double, speechID: UUID, chunkLabel: String, requestedAt: Date, completion: @escaping (Result<Data, Error>) -> Void) {
-        TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=\(chunkLabel) audio-request-preparing")
+    private func performAudioRequest(with token: String, text: String, language: String, voiceName: String, speed: Double, speechID: UUID, completion: @escaping (Result<Data, Error>) -> Void) {
         guard let url = URL(string: baseURL) else {
-            print("Invalid URL: \(baseURL)")
             completion(.failure(GoogleTTSError.invalidURL))
             return
         }
@@ -379,45 +357,33 @@ class GoogleTTSAPI {
         do {
             let jsonData = try JSONSerialization.data(withJSONObject: requestBody)
             request.httpBody = jsonData
-            TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=\(chunkLabel) request-body-prepared chars=\(text.count)")
         } catch {
-            print("JSON encoding error: \(error)")
             completion(.failure(GoogleTTSError.jsonEncodingError))
             return
         }
 
-        print("Creating URLSession task...")
         let requestID = UUID()
         let task = URLSession.shared.dataTask(with: request) { (data, response, error) in
             self.removeAudioTask(requestID, from: speechID)
             
             DispatchQueue.main.async {
                 if let error = error {
-                    TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=\(chunkLabel) response error=\(error.localizedDescription) elapsed=\(Self.elapsedString(since: requestedAt))")
-                    print("Network error: \(error)")
                     completion(.failure(error))
                     return
                 }
                 
                 guard let httpResponse = response as? HTTPURLResponse else {
-                    print("Invalid response type")
                     completion(.failure(GoogleTTSError.invalidResponse))
                     return
                 }
                 
-                TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=\(chunkLabel) response status=\(httpResponse.statusCode) elapsed=\(Self.elapsedString(since: requestedAt))")
-                print("Got response with status code: \(httpResponse.statusCode)")
-                print("Response headers: \(httpResponse.allHeaderFields)")
-                
                 guard (200...299).contains(httpResponse.statusCode) else {
                     let errorBody = data.flatMap { String(data: $0, encoding: .utf8) }
-                    print("HTTP error \(httpResponse.statusCode): \(errorBody ?? "no error body")")
                     completion(.failure(GoogleTTSError.httpError(httpResponse.statusCode, errorBody)))
                     return
                 }
                 
                 guard let data = data else {
-                    print("No data in response")
                     completion(.failure(GoogleTTSError.noData))
                     return
                 }
@@ -427,24 +393,19 @@ class GoogleTTSAPI {
                     guard let json = try JSONSerialization.jsonObject(with: data) as? [String: Any],
                           let audioContent = json["audioContent"] as? String,
                           let audioData = Data(base64Encoded: audioContent) else {
-                        print("Failed to extract audio content from response")
                         completion(.failure(GoogleTTSError.invalidResponse))
                         return
                     }
                     
-                    print("Success! Decoded \(audioData.count) bytes of audio data")
                     completion(.success(audioData))
                 } catch {
-                    print("JSON parsing error: \(error)")
                     completion(.failure(error))
                 }
             }
         }
         
-        print("Resuming task...")
-        guard registerAudioTask(task, requestID: requestID, for: speechID, chunkLabel: chunkLabel) else { return }
+        guard registerAudioTask(task, requestID: requestID, for: speechID) else { return }
         task.resume()
-        TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=\(chunkLabel) task-resumed requestID=\(TTSLogger.shortID(requestID)) elapsed=\(Self.elapsedString(since: requestedAt))")
     }
     
     private func registerAudioSession(_ speechID: UUID) {
@@ -456,11 +417,10 @@ class GoogleTTSAPI {
         }
     }
     
-    private func registerAudioTask(_ task: URLSessionDataTask, requestID: UUID, for speechID: UUID, chunkLabel: String) -> Bool {
+    private func registerAudioTask(_ task: URLSessionDataTask, requestID: UUID, for speechID: UUID) -> Bool {
         audioTasksQueue.sync {
             guard !cancelledAudioSessions.contains(speechID) else {
                 task.cancel()
-                TTSLogger.log("session=\(TTSLogger.shortID(speechID)) chunk=\(chunkLabel) cancelled before-task-resume")
                 return false
             }
             
@@ -489,10 +449,6 @@ class GoogleTTSAPI {
         }
     }
     
-    private static func elapsedString(since startDate: Date) -> String {
-        String(format: "%.3fs", Date().timeIntervalSince(startDate))
-    }
-    
     func fetchVoices(languageCode: String? = nil, completion: @escaping (Result<[TTSVoice], Error>) -> Void) {
         getAccessToken { [weak self] result in
             switch result {
@@ -505,7 +461,6 @@ class GoogleTTSAPI {
                 }
                 
                 guard let url = urlComponents?.url else {
-                    print("Invalid URL")
                     completion(.failure(GoogleTTSError.invalidURL))
                     return
                 }
@@ -515,7 +470,6 @@ class GoogleTTSAPI {
                 
                 URLSession.shared.dataTask(with: request) { data, response, error in
                     if let error = error {
-                        print("Voice fetch network error: \(error.localizedDescription)")
                         DispatchQueue.main.async {
                             completion(.failure(error))
                         }
@@ -531,7 +485,6 @@ class GoogleTTSAPI {
                     
                     guard (200...299).contains(httpResponse.statusCode) else {
                         let errorBody = data.flatMap { String(data: $0, encoding: .utf8) }
-                        print("Voice fetch HTTP error \(httpResponse.statusCode): \(errorBody ?? "no error body")")
                         DispatchQueue.main.async {
                             completion(.failure(GoogleTTSError.httpError(httpResponse.statusCode, errorBody)))
                         }
@@ -539,7 +492,6 @@ class GoogleTTSAPI {
                     }
                     
                     guard let data = data else {
-                        print("No voice data received")
                         DispatchQueue.main.async {
                             completion(.failure(GoogleTTSError.noData))
                         }
@@ -554,7 +506,6 @@ class GoogleTTSAPI {
                             completion(.success(response.voices))
                         }
                     } catch {
-                        print("Decoding error: \(error)")
                         DispatchQueue.main.async {
                             completion(.failure(error))
                         }
@@ -562,7 +513,6 @@ class GoogleTTSAPI {
                 }.resume()
                 
             case .failure(let error):
-                print("Failed to get token for voices: \(error)")
                 completion(.failure(error))
             }
         }
