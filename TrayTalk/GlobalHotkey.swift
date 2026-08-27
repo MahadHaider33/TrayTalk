@@ -3,11 +3,15 @@ import AppKit
 import Carbon.HIToolbox
 import ApplicationServices
 import Cocoa
+#if DEBUG
+import OSLog
+#endif
 
 enum HotkeyFormatter {
     static let defaultHotkey = "Option + `"
 
     private static let modifierOrder = ["Command", "Option", "Control", "Shift"]
+    private static let commandStyleModifiers = Set(["Command", "Option", "Control"])
 
     static func canonicalize(_ rawValue: String?) -> String {
         guard let rawValue else {
@@ -38,12 +42,20 @@ enum HotkeyFormatter {
             return defaultHotkey
         }
 
+        guard modifiers.contains(where: { commandStyleModifiers.contains($0) }) else {
+            return defaultHotkey
+        }
+
         let orderedModifiers = modifierOrder.filter { modifiers.contains($0) }
-        return (orderedModifiers + [key]).joined(separator: " + ")
+        let shortcut = (orderedModifiers + [key]).joined(separator: " + ")
+        return isAllowedShortcut(shortcut) ? shortcut : defaultHotkey
     }
 
     static func shortcut(from event: NSEvent) -> String? {
         let modifierFlags = event.modifierFlags
+        let hasCommandStyleModifier = modifierFlags.contains(.command) ||
+            modifierFlags.contains(.option) ||
+            modifierFlags.contains(.control)
 
         var parts: [String] = []
 
@@ -60,13 +72,24 @@ enum HotkeyFormatter {
             parts.append("Shift")
         }
 
-        guard !parts.isEmpty, let key = keyName(from: event) else {
+        guard hasCommandStyleModifier, !parts.isEmpty, let key = keyName(from: event) else {
             return nil
         }
 
         parts.append(key)
 
-        return canonicalize(parts.joined(separator: " + "))
+        let shortcut = canonicalize(parts.joined(separator: " + "))
+        return shortcut == defaultHotkey || isAllowedShortcut(shortcut) ? shortcut : nil
+    }
+
+    static func isAllowedShortcut(_ shortcut: String) -> Bool {
+        let canonicalShortcut = canonicalizeWithoutValidation(shortcut)
+        let parts = canonicalShortcut
+            .split(separator: "+", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+        let modifiers = Set(parts.compactMap(canonicalModifier))
+
+        return modifiers.contains { commandStyleModifiers.contains($0) }
     }
 
     private static func keyName(from event: NSEvent) -> String? {
@@ -125,6 +148,31 @@ enum HotkeyFormatter {
         }
 
         return trimmedValue.uppercased()
+    }
+
+    private static func canonicalizeWithoutValidation(_ rawValue: String) -> String {
+        let parts = rawValue
+            .split(separator: "+", omittingEmptySubsequences: true)
+            .map { $0.trimmingCharacters(in: .whitespacesAndNewlines) }
+            .filter { !$0.isEmpty }
+
+        var modifiers = Set<String>()
+        var keyParts: [String] = []
+
+        for part in parts {
+            if let modifier = canonicalModifier(part) {
+                modifiers.insert(modifier)
+            } else {
+                keyParts.append(part)
+            }
+        }
+
+        guard let key = keyParts.last.map(normalizeKey), !key.isEmpty else {
+            return defaultHotkey
+        }
+
+        let orderedModifiers = modifierOrder.filter { modifiers.contains($0) }
+        return (orderedModifiers + [key]).joined(separator: " + ")
     }
 }
 
@@ -248,8 +296,15 @@ class GlobalHotkey: NSObject {
     private let callback: (String) -> Void
     private var waitingForHotkey = false
     private var detectedHotkey = ""
-    private var hotkeyContinuation: CheckedContinuation<String, Never>?
+    private var hotkeyContinuation: CheckedContinuation<String?, Never>?
     private var runLoopSource: CFRunLoopSource?
+
+    #if DEBUG
+    private static let lifecycleLogger = Logger(
+        subsystem: "com.cyberofficeindustries.smoothtalker",
+        category: "GlobalHotkeyLifecycle"
+    )
+    #endif
     
     init(callback: @escaping (String) -> Void) {
         self.callback = callback
@@ -257,13 +312,16 @@ class GlobalHotkey: NSObject {
     }
     
     func reEnableEventTap() {
+        debugLog("reEnableEventTap requested")
         if let eventTap = eventTap {
             CGEvent.tapEnable(tap: eventTap, enable: true)
+            debugLog("reEnableEventTap completed")
         }
     }
 
     @discardableResult
     func registerHotkey() -> Bool {
+        debugLog("register requested; cleanup will run before creating new event tap")
         unregisterHotkey()
         
         let eventMask = (1 << CGEventType.keyDown.rawValue)
@@ -291,10 +349,14 @@ class GlobalHotkey: NSObject {
 
             if globalHotkey.waitingForHotkey {
                 globalHotkey.detectedHotkey = eventString
-                globalHotkey.hotkeyContinuation?.resume(returning: eventString)
+                let continuation = globalHotkey.hotkeyContinuation
+                globalHotkey.hotkeyContinuation = nil
                 globalHotkey.waitingForHotkey = false
+                globalHotkey.debugLog("capture completed event=\(eventString)")
+                continuation?.resume(returning: eventString)
                 return nil
             } else if Preferences.shared.hotkey == eventString {
+                globalHotkey.debugLog("matched global key event=\(eventString)")
                 Task {
                     globalHotkey.handleHotkeyPressed()
                 }
@@ -305,16 +367,21 @@ class GlobalHotkey: NSObject {
         }, userInfo: UnsafeMutableRawPointer(Unmanaged.passUnretained(self).toOpaque()))
 
         guard let eventTap = eventTap else {
+            debugLog("register failed; CGEvent.tapCreate returned nil")
             return false
         }
 
         runLoopSource = CFMachPortCreateRunLoopSource(kCFAllocatorDefault, eventTap, 0)
         CFRunLoopAddSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
         CGEvent.tapEnable(tap: eventTap, enable: true)
+        debugLog("register completed")
         return true
     }
     
     func unregisterHotkey() {
+        debugLog("unregister requested")
+        cancelHotkeyCapture()
+
         if let eventTap = eventTap {
             CGEvent.tapEnable(tap: eventTap, enable: false)
             CFMachPortInvalidate(eventTap)
@@ -324,17 +391,40 @@ class GlobalHotkey: NSObject {
             CFRunLoopRemoveSource(CFRunLoopGetCurrent(), runLoopSource, .commonModes)
             self.runLoopSource = nil
         }
+        debugLog("unregister completed")
     }
 
 
-    func waitForHotkey() async -> String {
+    func waitForHotkey() async -> String? {
+        cancelHotkeyCapture()
         waitingForHotkey = true
         detectedHotkey = ""
+        debugLog("capture started")
 
         return await withCheckedContinuation { continuation in
-            // Save continuation for later use
             self.hotkeyContinuation = continuation
         }
+    }
+
+    func cancelHotkeyCapture() {
+        guard waitingForHotkey || hotkeyContinuation != nil else { return }
+
+        debugLog("capture cancellation requested")
+        waitingForHotkey = false
+        detectedHotkey = ""
+        let continuation = hotkeyContinuation
+        hotkeyContinuation = nil
+        continuation?.resume(returning: nil)
+        debugLog("capture cancellation completed")
+    }
+
+    private func debugLog(_ message: String) {
+        #if DEBUG
+        let activeShortcut = Preferences.shared.hotkey
+        Self.lifecycleLogger.notice(
+            "\(message, privacy: .public); activeShortcut=\(activeShortcut, privacy: .public); eventTapExists=\(self.eventTap != nil, privacy: .public); runLoopSourceExists=\(self.runLoopSource != nil, privacy: .public); waitingForCapture=\(self.waitingForHotkey, privacy: .public)"
+        )
+        #endif
     }
 
 

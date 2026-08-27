@@ -1,6 +1,47 @@
 import Foundation
 import Security
 
+enum SpeakingSpeed {
+    static let minimum = 0.25
+    static let maximum = 4.0
+    static let markerNormal = 1.0
+    static let step = 0.1
+    static let sliderThumbDiameter = 22.0
+    static let markerVisualOffset = -1.0
+
+    static func normalize(_ value: Double) -> Double {
+        guard value.isFinite else { return markerNormal }
+
+        let clampedValue = min(max(value, minimum), maximum)
+        let roundedStepValue = ((clampedValue / step) + 1e-9).rounded(.toNearestOrAwayFromZero) * step
+        let roundedValue = min(max(roundedStepValue, 0.3), maximum)
+
+        if abs(clampedValue - minimum) <= abs(clampedValue - roundedValue) {
+            return minimum
+        }
+
+        return (roundedValue * 10).rounded() / 10
+    }
+
+    static func formatted(_ value: Double) -> String {
+        let normalizedValue = normalize(value)
+        if normalizedValue == minimum {
+            return String(format: "%.2fx", normalizedValue)
+        }
+
+        return String(format: "%.1fx", normalizedValue)
+    }
+
+    static var markerFraction: Double {
+        (markerNormal - minimum) / (maximum - minimum)
+    }
+
+    static func markerPosition(sliderWidth: Double) -> Double {
+        let usableWidth = max(0, sliderWidth - sliderThumbDiameter)
+        return (sliderThumbDiameter / 2) + (usableWidth * markerFraction) + markerVisualOffset
+    }
+}
+
 private enum GoogleCredentialsStore {
     private static let service = "com.cyberofficeindustries.smoothtalker.google-credentials"
     private static let account = "service-account-json"
@@ -90,6 +131,8 @@ class Preferences {
         static let hotkey = "hotkey"
         static let secondLaunch = "secondLaunch"
         static let googleCloudProjectID = "googleCloudProjectID"
+        static let appReviewDemoModeEnabled = "appReviewDemoModeEnabled"
+        static let appReviewDemoToken = "appReviewDemoToken"
     }
     
     var credentials: String {
@@ -146,6 +189,42 @@ class Preferences {
             }
         }
     }
+
+    var isAppReviewDemoModeEnabled: Bool {
+        get {
+            defaults.bool(forKey: Keys.appReviewDemoModeEnabled) &&
+                !appReviewDemoToken.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+        }
+        set {
+            defaults.set(newValue, forKey: Keys.appReviewDemoModeEnabled)
+        }
+    }
+
+    var appReviewDemoToken: String {
+        get {
+            defaults.string(forKey: Keys.appReviewDemoToken) ?? ""
+        }
+        set {
+            let trimmedValue = newValue.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !trimmedValue.isEmpty else {
+                defaults.removeObject(forKey: Keys.appReviewDemoToken)
+                defaults.set(false, forKey: Keys.appReviewDemoModeEnabled)
+                return
+            }
+
+            defaults.set(trimmedValue, forKey: Keys.appReviewDemoToken)
+        }
+    }
+
+    func enableAppReviewDemoMode(token: String) {
+        appReviewDemoToken = token
+        isAppReviewDemoModeEnabled = true
+    }
+
+    func clearAppReviewDemoMode() {
+        defaults.set(false, forKey: Keys.appReviewDemoModeEnabled)
+        defaults.removeObject(forKey: Keys.appReviewDemoToken)
+    }
     
     var inputText: String {
         get { defaults.string(forKey: Keys.inputText) ?? "Have a nice day!" }
@@ -163,8 +242,14 @@ class Preferences {
     }
     
     var speakingSpeed: Double {
-        get { defaults.double(forKey: Keys.speakingSpeed) }
-        set { defaults.set(newValue, forKey: Keys.speakingSpeed) }
+        get {
+            let normalizedSpeed = SpeakingSpeed.normalize(defaults.double(forKey: Keys.speakingSpeed))
+            defaults.set(normalizedSpeed, forKey: Keys.speakingSpeed)
+            return normalizedSpeed
+        }
+        set {
+            defaults.set(SpeakingSpeed.normalize(newValue), forKey: Keys.speakingSpeed)
+        }
     }
 
     var hotkey: String {

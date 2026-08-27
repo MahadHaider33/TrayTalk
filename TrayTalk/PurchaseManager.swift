@@ -1,19 +1,32 @@
 import Foundation
+import OSLog
 import StoreKit
+
+enum PremiumVoicesEntitlementStatus {
+    case checking
+    case owned
+    case notOwned
+}
 
 @MainActor
 final class PurchaseManager: ObservableObject {
     static let shared = PurchaseManager()
     
     static let premiumVoicesProductID = "com.kriyak.smoothtalker.premiumvoices"
+    private static let storefrontDiagnosticsLogger = Logger(
+        subsystem: "com.cyberofficeindustries.smoothtalker",
+        category: "StoreKitDiagnostics"
+    )
     
     @Published private(set) var hasPremiumVoices = false
+    @Published private(set) var premiumVoicesEntitlementStatus: PremiumVoicesEntitlementStatus = .checking
     @Published private(set) var premiumVoicesProduct: Product?
     @Published private(set) var isLoading = false
     @Published private(set) var statusMessage: String?
     
     private var transactionUpdatesTask: Task<Void, Never>?
     private var hasStarted = false
+    private var isRefreshing = false
     
     private init() {}
     
@@ -22,6 +35,11 @@ final class PurchaseManager: ObservableObject {
     }
     
     func start() async {
+        startTransactionUpdatesIfNeeded()
+        await refresh()
+    }
+
+    private func startTransactionUpdatesIfNeeded() {
         guard !hasStarted else { return }
         hasStarted = true
         
@@ -30,13 +48,16 @@ final class PurchaseManager: ObservableObject {
                 await self?.handle(transactionResult: result)
             }
         }
-        
-        await refresh()
     }
     
     func refresh() async {
+        guard !isRefreshing else { return }
+        isRefreshing = true
         isLoading = true
-        defer { isLoading = false }
+        defer {
+            isRefreshing = false
+            isLoading = false
+        }
         
         await refreshPremiumVoicesEntitlement()
         _ = try? await loadPremiumVoicesProduct()
@@ -48,6 +69,7 @@ final class PurchaseManager: ObservableObject {
         
         do {
             let product = try await premiumProduct()
+            await logCurrentStorefront(context: "before Premium Voices purchase")
             let result = try await product.purchase()
             
             switch result {
@@ -58,6 +80,7 @@ final class PurchaseManager: ObservableObject {
                 }
 
                 hasPremiumVoices = true
+                premiumVoicesEntitlementStatus = .owned
                 await transaction.finish()
                 await refreshPremiumVoicesEntitlement()
                 statusMessage = hasPremiumVoices ? "Premium voices unlocked." : "Purchase completed, but access is still pending."
@@ -97,12 +120,14 @@ final class PurchaseManager: ObservableObject {
         }
         
         hasPremiumVoices = transaction.revocationDate == nil
+        premiumVoicesEntitlementStatus = hasPremiumVoices ? .owned : .notOwned
         await transaction.finish()
         await refreshPremiumVoicesEntitlement()
     }
     
     @discardableResult
     private func loadPremiumVoicesProduct() async throws -> Product {
+        await logCurrentStorefront(context: "before Premium Voices product load")
         let products = try await Product.products(for: [Self.premiumVoicesProductID])
         guard let product = products.first else {
             throw PurchaseError.productUnavailable
@@ -121,6 +146,7 @@ final class PurchaseManager: ObservableObject {
     }
     
     private func refreshPremiumVoicesEntitlement() async {
+        premiumVoicesEntitlementStatus = .checking
         var isUnlocked = false
         
         for await result in Transaction.currentEntitlements {
@@ -135,6 +161,14 @@ final class PurchaseManager: ObservableObject {
         }
         
         hasPremiumVoices = isUnlocked
+        premiumVoicesEntitlementStatus = isUnlocked ? .owned : .notOwned
+    }
+
+    private func logCurrentStorefront(context: String) async {
+        let countryCode = await Storefront.current?.countryCode ?? "nil"
+        Self.storefrontDiagnosticsLogger.notice(
+            "StoreKit storefront \(context): countryCode=\(countryCode, privacy: .public)"
+        )
     }
     
     private func checkVerified<T>(_ result: VerificationResult<T>) throws -> T {

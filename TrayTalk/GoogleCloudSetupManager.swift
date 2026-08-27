@@ -42,7 +42,7 @@ struct GoogleCloudProject: Codable, Identifiable, Hashable {
 
 enum GoogleCloudSetupStage: Equatable {
     case idle
-    case signingIn
+    case authorizing
     case loadingProjects
     case creatingProject
     case checkingBilling
@@ -55,7 +55,7 @@ enum GoogleCloudSetupStage: Equatable {
 
     var isBusy: Bool {
         switch self {
-        case .signingIn, .loadingProjects, .creatingProject, .checkingBilling, .linkingBilling, .enablingServices, .creatingCredentials:
+        case .authorizing, .loadingProjects, .creatingProject, .checkingBilling, .linkingBilling, .enablingServices, .creatingCredentials:
             return true
         default:
             return false
@@ -65,7 +65,7 @@ enum GoogleCloudSetupStage: Equatable {
 
 enum GoogleCloudSetupFailureReason {
     case missingConfig
-    case loginCanceled
+    case authorizationCanceled
     case billing
     case apiEnable
     case keyCreationBlocked
@@ -95,7 +95,7 @@ final class GoogleCloudSetupModel: ObservableObject {
         run { [self] in
             do {
                 resetFailure()
-                await setStage(.signingIn, "Authorizing Google Cloud Text-to-Speech...")
+                await setStage(.authorizing, "Authorizing Google Cloud Text-to-Speech...")
                 accessToken = try await setupManager.signIn()
                 try await createProject()
                 try await discoverBillingAccounts()
@@ -237,6 +237,10 @@ final class GoogleCloudSetupModel: ObservableObject {
 }
 
 final class GoogleCloudSetupManager {
+    private static let serviceAccountID = "smooth-talker-tts"
+    private static let serviceAccountKeyRetryCount = 8
+    private static let serviceAccountKeyRetryDelay: UInt64 = 2_000_000_000
+
     private let session: URLSession
     private let authenticator = GoogleOAuthAuthenticator()
 
@@ -340,7 +344,7 @@ final class GoogleCloudSetupManager {
                 method: "POST",
                 accessToken: accessToken,
                 body: [
-                    "accountId": "smooth-talker-tts",
+                    "accountId": Self.serviceAccountID,
                     "serviceAccount": [
                         "displayName": "Smooth Talker Text-to-Speech"
                     ]
@@ -348,25 +352,38 @@ final class GoogleCloudSetupManager {
             )
         } catch let error as GoogleCloudSetupError {
             if case .api(let statusCode, _) = error, statusCode == 409 {
+                try await waitForServiceAccount(accessToken: accessToken, projectID: projectID)
                 return
             }
             throw error
         }
+
+        try await waitForServiceAccount(accessToken: accessToken, projectID: projectID)
     }
 
     func createServiceAccountKey(accessToken: String, projectID: String) async throws -> String {
-        let email = "smooth-talker-tts@\(projectID).iam.gserviceaccount.com"
-        let encodedEmail = email.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? email
+        let email = Self.serviceAccountEmail(projectID: projectID)
+        let encodedEmail = Self.encodedServiceAccountEmail(projectID: projectID)
         let url = URL(string: "https://iam.googleapis.com/v1/projects/\(projectID)/serviceAccounts/\(encodedEmail)/keys")!
-        let response: GoogleCloudServiceAccountKey = try await send(
-            url: url,
-            method: "POST",
-            accessToken: accessToken,
-            body: [
-                "privateKeyType": "TYPE_GOOGLE_CREDENTIALS_FILE",
-                "keyAlgorithm": "KEY_ALG_RSA_2048"
-            ]
-        )
+
+        let response: GoogleCloudServiceAccountKey
+        do {
+            response = try await retryingIAMPropagation(
+                fallbackMessage: "Service account \(email) does not exist."
+            ) {
+                try await self.send(
+                    url: url,
+                    method: "POST",
+                    accessToken: accessToken,
+                    body: [
+                        "privateKeyType": "TYPE_GOOGLE_CREDENTIALS_FILE",
+                        "keyAlgorithm": "KEY_ALG_RSA_2048"
+                    ]
+                )
+            }
+        } catch {
+            throw error
+        }
 
         guard let encodedKey = response.privateKeyData,
               let data = Data(base64Encoded: encodedKey),
@@ -375,6 +392,59 @@ final class GoogleCloudSetupManager {
         }
 
         return json
+    }
+
+    private func waitForServiceAccount(accessToken: String, projectID: String) async throws {
+        let email = Self.serviceAccountEmail(projectID: projectID)
+        let encodedEmail = Self.encodedServiceAccountEmail(projectID: projectID)
+        let url = URL(string: "https://iam.googleapis.com/v1/projects/\(projectID)/serviceAccounts/\(encodedEmail)")!
+
+        let _: GoogleCloudServiceAccount = try await retryingIAMPropagation(
+            fallbackMessage: "Service account \(email) does not exist."
+        ) {
+            try await self.send(url: url, accessToken: accessToken)
+        }
+    }
+
+    private func retryingIAMPropagation<T>(
+        fallbackMessage: String,
+        operation: () async throws -> T
+    ) async throws -> T {
+        var lastError: Error?
+
+        for attempt in 0..<Self.serviceAccountKeyRetryCount {
+            do {
+                return try await operation()
+            } catch {
+                guard isServiceAccountPropagationError(error), attempt < Self.serviceAccountKeyRetryCount - 1 else {
+                    throw error
+                }
+
+                lastError = error
+                try await Task.sleep(nanoseconds: Self.serviceAccountKeyRetryDelay)
+            }
+        }
+
+        throw lastError ?? GoogleCloudSetupError.invalidResponse(fallbackMessage)
+    }
+
+    private func isServiceAccountPropagationError(_ error: Error) -> Bool {
+        guard case GoogleCloudSetupError.api(let statusCode, let message) = error else {
+            return false
+        }
+
+        return statusCode == 404 &&
+            message.localizedCaseInsensitiveContains("service account") &&
+            message.localizedCaseInsensitiveContains("does not exist")
+    }
+
+    private static func serviceAccountEmail(projectID: String) -> String {
+        "\(serviceAccountID)@\(projectID).iam.gserviceaccount.com"
+    }
+
+    private static func encodedServiceAccountEmail(projectID: String) -> String {
+        let email = serviceAccountEmail(projectID: projectID)
+        return email.addingPercentEncoding(withAllowedCharacters: .urlPathAllowed) ?? email
     }
 
     private func waitForOperation(_ operation: GoogleCloudOperation, accessToken: String, baseURL: URL) async throws {
@@ -918,7 +988,7 @@ enum GoogleCloudSetupError: LocalizedError {
         }
 
         if case .authCanceled = error as? GoogleCloudSetupError {
-            return .loginCanceled
+            return .authorizationCanceled
         }
 
         if case .billingNotLinked = error as? GoogleCloudSetupError {

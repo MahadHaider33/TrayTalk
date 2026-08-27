@@ -19,12 +19,13 @@ struct ContentView: View {
     @State private var isInitializing = false
     @State private var selectedVoice: TTSVoice?
     @AppStorage("speakingSpeed") private var speakingSpeed = 1.0
-    @State private var api: GoogleTTSAPI?
+    @State private var api: TextToSpeechProviding?
     @State private var availableVoices: [TTSVoice] = []
     @State private var selectedLanguage: String = "en-US"
     @State private var availableLanguages: [String] = []
     @AppStorage("hotkey") private var hotkey = HotkeyFormatter.defaultHotkey
     @State private var editingHotkey = false
+    @State private var hotkeyCaptureTask: Task<Void, Never>?
     @State var loadVoicesTask: Task<Void, Never>?
     @State private var isCredentialsSheetPresented = false
     @State private var isUnlockSheetPresented = false
@@ -32,8 +33,12 @@ struct ContentView: View {
     @State private var pendingLockedVoice: TTSVoice?
     @State private var deferredPremiumVoiceName: String?
     @State private var onboardingStep: MandatoryOnboardingStep = .accessibility
+    @State private var isAppReviewDemoModeEnabled = Preferences.shared.isAppReviewDemoModeEnabled
 
-    private let inputLimit = 5000
+    private let inputLimit = 70
+    private static let appReviewDemoLanguage = "en-US"
+    private static let appReviewDemoVoiceName = "en-US-Chirp3-HD-Sadaltager"
+    private static let appReviewDemoSampleText = "Gift Helper: Preparing App Store Review information."
 
     var filteredVoices: [TTSVoice] {
         if selectedLanguage.isEmpty {
@@ -54,15 +59,32 @@ struct ContentView: View {
 
     private var canSpeak: Bool {
         let selectedVoiceCanPlay = selectedVoice.map { !isVoiceLocked($0) } ?? false
-        return !credentials.isEmpty && !inputText.isEmpty && !isLoading && !isInitializing && selectedVoiceCanPlay
+        return hasTextToSpeechAccess && !inputText.isEmpty && !isLoading && !isInitializing && selectedVoiceCanPlay
     }
 
     private var hasGoogleCloudCredentials: Bool {
         !credentials.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
     }
 
+    private var hasTextToSpeechAccess: Bool {
+        hasGoogleCloudCredentials || isAppReviewDemoModeEnabled
+    }
+
     private var googleCloudNeedsOnboarding: Bool {
-        !hasGoogleCloudCredentials || hasError
+        !hasTextToSpeechAccess || hasError
+    }
+
+    private var speakingSpeedBinding: Binding<Double> {
+        Binding(
+            get: {
+                SpeakingSpeed.normalize(speakingSpeed)
+            },
+            set: { newValue in
+                let normalizedSpeed = SpeakingSpeed.normalize(newValue)
+                Preferences.shared.speakingSpeed = normalizedSpeed
+                speakingSpeed = normalizedSpeed
+            }
+        )
     }
 
     private var mandatoryOnboardingStep: MandatoryOnboardingStep? {
@@ -91,7 +113,7 @@ struct ContentView: View {
     }
 
     private var cloudStatus: ConnectionStatus {
-        if credentials.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if !hasTextToSpeechAccess {
             return .notConfigured
         }
 
@@ -111,7 +133,7 @@ struct ContentView: View {
     }
 
     private var readyStatus: ReadyStatus {
-        if credentials.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if !hasTextToSpeechAccess {
             return ReadyStatus(
                 title: "Not configured",
                 message: "Connect Google Cloud Text-to-Speech to start using Smooth Talker.",
@@ -180,6 +202,8 @@ struct ContentView: View {
             .sheet(isPresented: $isCredentialsSheetPresented) {
                 CredentialsSetupSheet { newCredentials, voices in
                     saveValidatedCredentials(newCredentials, voices: voices)
+                } onReviewDemoSave: { demoToken, voices in
+                    saveAppReviewDemoAccess(token: demoToken, voices: voices)
                 }
             }
             .sheet(isPresented: $isUnlockSheetPresented) {
@@ -201,12 +225,15 @@ struct ContentView: View {
             }
             .onAppear {
                 normalizeStoredHotkey()
+                normalizeStoredSpeakingSpeed()
 
                 if inputText.count > inputLimit {
                     inputText = String(inputText.prefix(inputLimit))
                 }
 
-                if !credentials.isEmpty && availableVoices.isEmpty {
+                isAppReviewDemoModeEnabled = Preferences.shared.isAppReviewDemoModeEnabled
+
+                if hasTextToSpeechAccess && availableVoices.isEmpty {
                     startLoadVoicesTask(resetAPI: false)
                 }
 
@@ -216,18 +243,17 @@ struct ContentView: View {
                     onboardingStep = .googleCloud
                 }
             }
+            .onDisappear {
+                stopEditingHotkey()
+            }
             .task {
                 await purchaseManager.start()
-            }
-            .onChange(of: inputText) { _, newValue in
-                guard newValue.count > inputLimit else { return }
-                inputText = String(newValue.prefix(inputLimit))
             }
             .onChange(of: credentials) { _, newValue in
                 if !newValue.isEmpty {
                     startLoadVoicesTask(resetAPI: true)
-                } else {
-                    GoogleTTSAPI.resetSharedInstance()
+                } else if !isAppReviewDemoModeEnabled {
+                    TextToSpeechClient.resetSharedInstances()
                     api = nil
                     availableVoices = []
                     availableLanguages = []
@@ -247,11 +273,14 @@ struct ContentView: View {
                 Preferences.shared.voiceName = newValue?.name ?? ""
                 Preferences.shared.language = newValue?.languageCodes.first ?? "unknown"
             }
-            .onChange(of: purchaseManager.hasPremiumVoices) { _, hasPremiumVoices in
-                if hasPremiumVoices {
+            .onChange(of: purchaseManager.premiumVoicesEntitlementStatus) { _, status in
+                switch status {
+                case .checking:
+                    break
+                case .owned:
                     selectDeferredPremiumVoiceIfAvailable()
                     selectPendingLockedVoiceIfUnlocked()
-                } else {
+                case .notOwned:
                     ensureSelectedVoiceIsAccessible()
                 }
             }
@@ -260,10 +289,9 @@ struct ContentView: View {
             }
             .onChange(of: editingHotkey) { _, newValue in
                 if newValue {
-                    Task {
-                        saveHotkey((await HotkeyManager.shared.hotkey?.waitForHotkey()) ?? "")
-                        editingHotkey = false
-                    }
+                    startEditingHotkey()
+                } else {
+                    stopEditingHotkey()
                 }
             }
     }
@@ -277,6 +305,7 @@ struct ContentView: View {
                 googleCloudErrorMessage: hasError ? result : nil,
                 onAccessibilityContinue: continueFromAccessibilitySuccess,
                 onGoogleCloudConnected: handleOnboardingGoogleCloudConnected,
+                onReviewDemoConnected: handleOnboardingReviewDemoConnected,
                 onGoogleCloudContinue: continueFromGoogleCloudSuccess
             )
         } else {
@@ -322,14 +351,16 @@ struct ContentView: View {
     }
 
     private var inputArea: some View {
-        VStack(alignment: .trailing, spacing: 12) {
+        HStack(alignment: .center, spacing: 12) {
             ZStack(alignment: .bottomTrailing) {
-                TextEditor(text: $inputText)
-                    .font(.system(size: 16))
-                    .scrollContentBackground(.hidden)
-                    .padding(15)
-                    .padding(.bottom, 24)
-                    .frame(minHeight: 124)
+                LimitedTextField(
+                    text: $inputText,
+                    characterLimit: inputLimit,
+                    placeholder: "Text to speak"
+                )
+                    .padding(.horizontal, 16)
+                    .padding(.trailing, 76)
+                    .frame(height: 50)
                     .background(
                         RoundedRectangle(cornerRadius: 10, style: .continuous)
                             .fill(Color(nsColor: .textBackgroundColor))
@@ -340,11 +371,12 @@ struct ContentView: View {
                     )
 
                 Text("\(inputText.count) / \(inputLimit)")
-                    .font(.system(size: 13, weight: .medium, design: .rounded))
+                    .font(.system(size: 12, weight: .medium, design: .rounded))
                     .foregroundStyle(.secondary)
                     .padding(.trailing, 16)
-                    .padding(.bottom, 14)
+                    .padding(.bottom, 7)
             }
+            .frame(maxWidth: .infinity)
 
             Button(action: {
                 speakText(inputText)
@@ -407,14 +439,28 @@ struct ContentView: View {
                             .font(.system(size: 18, weight: .medium))
                             .foregroundStyle(.secondary)
 
-                        Slider(value: $speakingSpeed, in: 0.25...4.0)
-                            .tint(.orange)
+                        ZStack(alignment: .leading) {
+                            Slider(value: speakingSpeedBinding, in: SpeakingSpeed.minimum...SpeakingSpeed.maximum)
+                                .tint(.orange)
+
+                            GeometryReader { proxy in
+                                Circle()
+                                    .fill(Color.secondary.opacity(0.55))
+                                    .frame(width: 5, height: 5)
+                                    .position(
+                                        x: CGFloat(SpeakingSpeed.markerPosition(sliderWidth: Double(proxy.size.width))),
+                                        y: proxy.size.height / 2
+                                    )
+                            }
+                            .allowsHitTesting(false)
+                        }
+                        .frame(height: 28)
 
                         Text("+")
                             .font(.system(size: 18, weight: .medium))
                             .foregroundStyle(.secondary)
 
-                        Text("\(speakingSpeed, specifier: "%.2f")x")
+                        Text(SpeakingSpeed.formatted(speakingSpeed))
                             .font(.system(size: 15, weight: .semibold, design: .rounded))
                             .foregroundStyle(.orange)
                             .frame(width: 66, height: 34)
@@ -432,7 +478,7 @@ struct ContentView: View {
                 Divider()
                     .padding(.leading, 76)
 
-                SettingsRow(symbolName: "keyboard", title: "Assistive Shortcut") {
+                SettingsRow(symbolName: "keyboard", title: "Keyboard Shortcut") {
                     HStack(spacing: 10) {
                         Text(editingHotkey ? "Press keys" : hotkey)
                             .font(.system(size: 15, weight: .medium))
@@ -504,7 +550,7 @@ struct ContentView: View {
 
                 Spacer(minLength: 16)
 
-                if credentials.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+                if !hasTextToSpeechAccess {
                     Button("Connect Google Cloud...") {
                         isCredentialsSheetPresented = true
                     }
@@ -521,12 +567,26 @@ struct ContentView: View {
 
     private func saveValidatedCredentials(_ newCredentials: String, voices: [TTSVoice]) {
         let trimmedCredentials = newCredentials.trimmingCharacters(in: .whitespacesAndNewlines)
+        Preferences.shared.clearAppReviewDemoMode()
+        isAppReviewDemoModeEnabled = false
         Preferences.shared.credentials = trimmedCredentials
         credentials = trimmedCredentials
         isCredentialsSheetPresented = false
-        GoogleTTSAPI.resetSharedInstance()
+        TextToSpeechClient.resetSharedInstances()
         applyVoices(voices)
         result = "Google Cloud Text-to-Speech connected. Ready to read aloud."
+    }
+
+    private func saveAppReviewDemoAccess(token: String, voices: [TTSVoice]) {
+        Preferences.shared.enableAppReviewDemoMode(token: token)
+        isAppReviewDemoModeEnabled = true
+        Preferences.shared.credentials = ""
+        credentials = ""
+        isCredentialsSheetPresented = false
+        TextToSpeechClient.resetSharedInstances()
+        applyVoices(voices)
+        applyAppReviewDemoDefaults()
+        result = "App Review demo connected. Ready to read aloud."
     }
 
     private func continueFromAccessibilitySuccess() {
@@ -538,14 +598,21 @@ struct ContentView: View {
         onboardingStep = .googleCloudSuccess
     }
 
+    private func handleOnboardingReviewDemoConnected(_ token: String, voices: [TTSVoice]) {
+        saveAppReviewDemoAccess(token: token, voices: voices)
+        onboardingStep = .googleCloudSuccess
+    }
+
     private func continueFromGoogleCloudSuccess() {
         onboardingStep = .googleCloud
     }
 
     private func clearCredentials() {
         Preferences.shared.credentials = ""
+        Preferences.shared.clearAppReviewDemoMode()
         credentials = ""
-        GoogleTTSAPI.resetSharedInstance()
+        isAppReviewDemoModeEnabled = false
+        TextToSpeechClient.resetSharedInstances()
         api = nil
         availableVoices = []
         availableLanguages = []
@@ -557,10 +624,39 @@ struct ContentView: View {
         saveHotkey(hotkey)
     }
 
+    private func normalizeStoredSpeakingSpeed() {
+        let normalizedSpeed = Preferences.shared.speakingSpeed
+        if speakingSpeed != normalizedSpeed {
+            speakingSpeed = normalizedSpeed
+        }
+    }
+
     private func saveHotkey(_ newHotkey: String) {
         let canonicalHotkey = HotkeyFormatter.canonicalize(newHotkey)
         Preferences.shared.hotkey = canonicalHotkey
         hotkey = canonicalHotkey
+    }
+
+    private func startEditingHotkey() {
+        hotkeyCaptureTask?.cancel()
+        hotkeyCaptureTask = Task { @MainActor in
+            let capturedHotkey = await HotkeyManager.shared.hotkey?.waitForHotkey()
+            guard !Task.isCancelled else { return }
+
+            if let capturedHotkey, !capturedHotkey.isEmpty {
+                saveHotkey(capturedHotkey)
+            }
+
+            hotkeyCaptureTask = nil
+            editingHotkey = false
+        }
+    }
+
+    private func stopEditingHotkey() {
+        hotkeyCaptureTask?.cancel()
+        hotkeyCaptureTask = nil
+        HotkeyManager.shared.hotkey?.cancelHotkeyCapture()
+        editingHotkey = false
     }
 
     private func startLoadVoicesTask(resetAPI: Bool) {
@@ -572,30 +668,41 @@ struct ContentView: View {
 
     private func loadVoices(resetAPI: Bool) {
         if resetAPI {
-            GoogleTTSAPI.resetSharedInstance()
+            TextToSpeechClient.resetSharedInstances()
         }
 
         isInitializing = true
         result = "Loading voices..."
-        GoogleTTSAPI.getInstance(credentialsJson: credentials) { api in
-            self.api = api
-            api.fetchVoices { fetchResult in
-                DispatchQueue.main.async {
-                    switch fetchResult {
-                    case .success(let voices):
-                        if voices.isEmpty {
-                            result = "Google Cloud Text-to-Speech connected, but no voices were returned. Try again in a moment."
-                        } else {
-                            applyVoices(voices)
-                            result = "Success! Ready to read aloud."
+        TextToSpeechClient.getInstance { apiResult in
+            switch apiResult {
+            case .success(let api):
+                self.api = api
+                api.fetchVoices { fetchResult in
+                    DispatchQueue.main.async {
+                        switch fetchResult {
+                        case .success(let voices):
+                            if voices.isEmpty {
+                                result = "Google Cloud Text-to-Speech connected, but no voices were returned. Try again in a moment."
+                            } else {
+                                applyVoices(voices)
+                                result = "Success! Ready to read aloud."
+                            }
+                        case .failure(let error):
+                            self.availableVoices = []
+                            self.availableLanguages = []
+                            self.selectedVoice = nil
+                            result = GoogleTTSError.userMessage(for: error)
                         }
-                    case .failure(let error):
-                        self.availableVoices = []
-                        self.availableLanguages = []
-                        self.selectedVoice = nil
-                        result = GoogleTTSError.userMessage(for: error)
-                    }
 
+                        isInitializing = false
+                    }
+                }
+            case .failure(let error):
+                DispatchQueue.main.async {
+                    self.availableVoices = []
+                    self.availableLanguages = []
+                    self.selectedVoice = nil
+                    result = GoogleTTSError.userMessage(for: error)
                     isInitializing = false
                 }
             }
@@ -637,6 +744,30 @@ struct ContentView: View {
         }
     }
 
+    private func applyAppReviewDemoDefaults() {
+        inputText = String(Self.appReviewDemoSampleText.prefix(inputLimit))
+        speakingSpeed = SpeakingSpeed.markerNormal
+        Preferences.shared.speakingSpeed = SpeakingSpeed.markerNormal
+
+        if let demoVoice = availableVoices.first(where: { $0.name == Self.appReviewDemoVoiceName }) {
+            selectedVoice = demoVoice
+            if demoVoice.languageCodes.contains(Self.appReviewDemoLanguage) {
+                selectedLanguage = Self.appReviewDemoLanguage
+            } else {
+                selectedLanguage = demoVoice.languageCodes.first ?? Self.appReviewDemoLanguage
+            }
+        } else {
+            if availableLanguages.contains(Self.appReviewDemoLanguage) {
+                selectedLanguage = Self.appReviewDemoLanguage
+            }
+
+            selectedVoice = firstAccessibleVoice(in: filteredVoices)
+        }
+
+        Preferences.shared.voiceName = selectedVoice?.name ?? ""
+        Preferences.shared.language = selectedLanguage
+    }
+
     private func isSelectableGoogleVoice(_ voice: TTSVoice) -> Bool {
         voice.name.range(of: #"^[a-z]{2,3}-[A-Z]{2}-"#, options: .regularExpression) != nil
     }
@@ -650,7 +781,16 @@ struct ContentView: View {
     }
 
     private func isVoiceLocked(_ voice: TTSVoice) -> Bool {
-        VoiceCategory(for: voice.name).requiresPremiumUnlock && !purchaseManager.hasPremiumVoices
+        guard VoiceCategory(for: voice.name).requiresPremiumUnlock else {
+            return false
+        }
+
+        switch purchaseManager.premiumVoicesEntitlementStatus {
+        case .checking, .owned:
+            return false
+        case .notOwned:
+            return !isAppReviewDemoModeEnabled
+        }
     }
 
     private func firstAccessibleVoice(in voices: [TTSVoice]? = nil) -> TTSVoice? {
@@ -968,6 +1108,7 @@ private struct MandatoryOnboardingGate: View {
     let googleCloudErrorMessage: String?
     let onAccessibilityContinue: () -> Void
     let onGoogleCloudConnected: (String, [TTSVoice]) -> Void
+    let onReviewDemoConnected: (String, [TTSVoice]) -> Void
     let onGoogleCloudContinue: () -> Void
 
     var body: some View {
@@ -1050,6 +1191,8 @@ private struct MandatoryOnboardingGate: View {
 
                     GoogleCloudSetupPanel(presentation: .onboarding) { credentials, voices in
                         onGoogleCloudConnected(credentials, voices)
+                    } onReviewDemoSave: { token, voices in
+                        onReviewDemoConnected(token, voices)
                     }
                     .frame(maxWidth: 620)
                     .padding(.top, 4)
@@ -1316,9 +1459,10 @@ private enum CredentialValidationState {
 
 private struct CredentialsSetupSheet: View {
     let onSave: (String, [TTSVoice]) -> Void
+    let onReviewDemoSave: (String, [TTSVoice]) -> Void
 
     var body: some View {
-        GoogleCloudSetupPanel(presentation: .compactSheet, onSave: onSave)
+        GoogleCloudSetupPanel(presentation: .compactSheet, onSave: onSave, onReviewDemoSave: onReviewDemoSave)
     }
 }
 
@@ -1331,12 +1475,20 @@ private struct GoogleCloudSetupPanel: View {
     @Environment(\.dismiss) private var dismiss
     @StateObject private var automaticSetup = GoogleCloudSetupModel()
     @State private var validationState: CredentialValidationState = .idle
+    @State private var isReviewDemoCodeVisible = false
+    @State private var reviewDemoCode = ""
     let presentation: GoogleCloudSetupPresentation
     let onSave: (String, [TTSVoice]) -> Void
+    let onReviewDemoSave: (String, [TTSVoice]) -> Void
 
-    init(presentation: GoogleCloudSetupPresentation, onSave: @escaping (String, [TTSVoice]) -> Void) {
+    init(
+        presentation: GoogleCloudSetupPresentation,
+        onSave: @escaping (String, [TTSVoice]) -> Void,
+        onReviewDemoSave: @escaping (String, [TTSVoice]) -> Void
+    ) {
         self.presentation = presentation
         self.onSave = onSave
+        self.onReviewDemoSave = onReviewDemoSave
     }
 
     var body: some View {
@@ -1367,9 +1519,11 @@ private struct GoogleCloudSetupPanel: View {
 
                 setupButton
             }
+
+            reviewDemoSection
         }
         .padding(24)
-        .frame(width: 320)
+        .frame(width: 360)
     }
 
     private var onboardingBody: some View {
@@ -1378,6 +1532,8 @@ private struct GoogleCloudSetupPanel: View {
                 .frame(maxWidth: 560)
 
             setupButton
+
+            reviewDemoSection
         }
     }
 
@@ -1394,6 +1550,34 @@ private struct GoogleCloudSetupPanel: View {
         .controlSize(presentation == .onboarding ? .large : .regular)
         .tint(.orange)
         .disabled(isConnectDisabled)
+    }
+
+    private var reviewDemoSection: some View {
+        VStack(alignment: presentation == .onboarding ? .center : .trailing, spacing: 8) {
+            Button("App Review Demo") {
+                validationState = .idle
+                isReviewDemoCodeVisible.toggle()
+            }
+            .buttonStyle(.plain)
+            .font(.system(size: 12, weight: .semibold))
+            .foregroundStyle(.secondary)
+            .disabled(isConnectDisabled)
+
+            if isReviewDemoCodeVisible {
+                HStack(spacing: 8) {
+                    SecureField("Demo code", text: $reviewDemoCode)
+                        .textFieldStyle(.roundedBorder)
+                        .frame(width: presentation == .onboarding ? 260 : 190)
+
+                    Button("Start Demo") {
+                        connectReviewDemo()
+                    }
+                    .disabled(isConnectDisabled || reviewDemoCode.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
+                }
+                .frame(maxWidth: .infinity, alignment: presentation == .onboarding ? .center : .trailing)
+            }
+        }
+        .padding(.top, 4)
     }
 
     @ViewBuilder
@@ -1459,6 +1643,36 @@ private struct GoogleCloudSetupPanel: View {
     private func connect() {
         validationState = .idle
         automaticSetup.startAutomaticSetup()
+    }
+
+    private func connectReviewDemo() {
+        let token = reviewDemoCode.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !token.isEmpty else {
+            validationState = .failure("Enter the App Review demo code.")
+            return
+        }
+
+        validationState = .validating("Connecting App Review demo...")
+        ReviewDemoTTSAPI.resetSharedInstance()
+        ReviewDemoTTSAPI.getInstance(token: token) { api in
+            api.fetchVoices { result in
+                DispatchQueue.main.async {
+                    switch result {
+                    case .success(let voices):
+                        guard !voices.isEmpty else {
+                            validationState = .failure("App Review demo connected, but no voices were returned. Try again in a moment.")
+                            return
+                        }
+
+                        onReviewDemoSave(token, voices)
+                        validationState = .success("App Review demo connected.")
+                    case .failure(let error):
+                        validationState = .failure(GoogleTTSError.userMessage(for: error))
+                        ReviewDemoTTSAPI.resetSharedInstance()
+                    }
+                }
+            }
+        }
     }
 
     private func validateAndConnect(_ credentialsJSON: String) {
@@ -1701,6 +1915,129 @@ enum VoiceCategory: Int, CaseIterable {
 
     var requiresPremiumUnlock: Bool {
         !isFree
+    }
+}
+
+private struct LimitedTextField: NSViewRepresentable {
+    @Binding var text: String
+    let characterLimit: Int
+    let placeholder: String
+
+    func makeCoordinator() -> Coordinator {
+        Coordinator(text: $text, characterLimit: characterLimit)
+    }
+
+    func makeNSView(context: Context) -> NSTextField {
+        let textField = NSTextField(string: String(text.prefix(characterLimit)))
+        textField.placeholderString = placeholder
+        textField.delegate = context.coordinator
+        textField.formatter = CharacterLimitFormatter(characterLimit: characterLimit)
+        textField.font = .systemFont(ofSize: 16)
+        textField.isBordered = false
+        textField.drawsBackground = false
+        textField.focusRingType = .none
+        textField.lineBreakMode = .byTruncatingTail
+        textField.cell?.usesSingleLineMode = true
+        textField.cell?.truncatesLastVisibleLine = true
+        return textField
+    }
+
+    func updateNSView(_ textField: NSTextField, context: Context) {
+        context.coordinator.text = $text
+        context.coordinator.characterLimit = characterLimit
+
+        if let formatter = textField.formatter as? CharacterLimitFormatter {
+            formatter.characterLimit = characterLimit
+        } else {
+            textField.formatter = CharacterLimitFormatter(characterLimit: characterLimit)
+        }
+
+        let limitedText = String(text.prefix(characterLimit))
+        if text != limitedText {
+            text = limitedText
+        }
+
+        guard textField.currentEditor() == nil, textField.stringValue != limitedText else {
+            return
+        }
+
+        textField.stringValue = limitedText
+    }
+
+    final class Coordinator: NSObject, NSTextFieldDelegate {
+        var text: Binding<String>
+        var characterLimit: Int
+
+        init(text: Binding<String>, characterLimit: Int) {
+            self.text = text
+            self.characterLimit = characterLimit
+        }
+
+        func controlTextDidChange(_ notification: Notification) {
+            guard let textField = notification.object as? NSTextField else {
+                return
+            }
+
+            let limitedText = String(textField.stringValue.prefix(characterLimit))
+            if textField.stringValue != limitedText {
+                textField.stringValue = limitedText
+                textField.currentEditor()?.string = limitedText
+                textField.currentEditor()?.selectedRange = NSRange(location: (limitedText as NSString).length, length: 0)
+            }
+
+            if text.wrappedValue != limitedText {
+                text.wrappedValue = limitedText
+            }
+        }
+    }
+}
+
+private final class CharacterLimitFormatter: Formatter {
+    var characterLimit: Int
+
+    init(characterLimit: Int) {
+        self.characterLimit = characterLimit
+        super.init()
+    }
+
+    required init?(coder: NSCoder) {
+        characterLimit = 0
+        super.init(coder: coder)
+    }
+
+    override func string(for obj: Any?) -> String? {
+        guard let string = obj as? String else {
+            return nil
+        }
+
+        return String(string.prefix(characterLimit))
+    }
+
+    override func getObjectValue(
+        _ obj: AutoreleasingUnsafeMutablePointer<AnyObject?>?,
+        for string: String,
+        errorDescription error: AutoreleasingUnsafeMutablePointer<NSString?>?
+    ) -> Bool {
+        obj?.pointee = String(string.prefix(characterLimit)) as NSString
+        return true
+    }
+
+    override func isPartialStringValid(
+        _ partialStringPtr: AutoreleasingUnsafeMutablePointer<NSString>,
+        proposedSelectedRange proposedSelRangePtr: NSRangePointer?,
+        originalString origString: String,
+        originalSelectedRange origSelRange: NSRange,
+        errorDescription error: AutoreleasingUnsafeMutablePointer<NSString?>?
+    ) -> Bool {
+        let proposedString = partialStringPtr.pointee as String
+        guard proposedString.count > characterLimit else {
+            return true
+        }
+
+        let limitedString = String(proposedString.prefix(characterLimit))
+        partialStringPtr.pointee = limitedString as NSString
+        proposedSelRangePtr?.pointee = NSRange(location: (limitedString as NSString).length, length: 0)
+        return false
     }
 }
 
